@@ -17,9 +17,9 @@ use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite};
 use tracing::{debug, error, info, trace, warn};
 use tungstenite::Message;
 
-use crate::plugin::livesplit::protocol::Command;
+use crate::{chat_print_async, plugin::livesplit::protocol::Command};
 
-pub const BIND_ADDR: &str = "127.0.0.1:16834";
+pub const BIND_ADDR: &str = "127.0.0.1:16833";
 
 pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<AtomicBool>) {
     let listener = match TcpListener::bind(BIND_ADDR).await {
@@ -29,6 +29,9 @@ pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<At
         }
         Err(e) => {
             error!("failed to bind LiveSplit WS server on {BIND_ADDR}: {e}");
+            chat_print_async(format!(
+                "&cLiveSplit: failed to bind server on {BIND_ADDR}: {e}"
+            ));
             return;
         }
     };
@@ -49,9 +52,13 @@ pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<At
                         if let Some(mut old) = ws.replace(new_ws) {
                             let _ = old.close(None).await;
                             debug!("closed previous LiveSplit client (replaced by {peer})");
+                            chat_print_async(
+                                "&eLiveSplit: previous server client kicked".to_string(),
+                            );
                         }
                         connected.store(true, Ordering::Relaxed);
                         info!("LiveSplit client connected from {peer}");
+                        chat_print_async(format!("&aLiveSplit: server client connected ({peer})"));
                     }
                     Err(e) => warn!("WS handshake failed from {peer}: {e}"),
                 }
@@ -75,6 +82,7 @@ pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<At
                 };
                 if !send_command(&mut ws, &cmd).await {
                     connected.store(false, Ordering::Relaxed);
+                    chat_print_async("&eLiveSplit: server client disconnected".to_string());
                 }
             }
 
@@ -87,16 +95,19 @@ pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<At
                         debug!(?c, "LiveSplit client closed");
                         ws = None;
                         connected.store(false, Ordering::Relaxed);
+                        chat_print_async("&eLiveSplit: server client disconnected".to_string());
                     }
                     Some(Err(e)) => {
                         debug!("WS read error; dropping client: {e}");
                         ws = None;
                         connected.store(false, Ordering::Relaxed);
+                        chat_print_async("&eLiveSplit: server client disconnected".to_string());
                     }
                     None => {
                         debug!("LiveSplit client stream ended");
                         ws = None;
                         connected.store(false, Ordering::Relaxed);
+                        chat_print_async("&eLiveSplit: server client disconnected".to_string());
                     }
                 }
             }
@@ -104,6 +115,7 @@ pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<At
             _ = ping.tick() => {
                 if ws.is_some() && !send_command(&mut ws, &Command::Ping).await {
                     connected.store(false, Ordering::Relaxed);
+                    chat_print_async("&eLiveSplit: server client disconnected".to_string());
                 }
             }
         }
@@ -117,13 +129,7 @@ async fn send_command(ws: &mut Option<WebSocketStream<TcpStream>>, cmd: &Command
         trace!(?cmd, "ls outbound dropped (no client)");
         return false;
     };
-    let json = match serde_json::to_string(cmd) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("failed to serialize command {cmd:?}: {e}");
-            return true;
-        }
-    };
+    let json = serde_json::to_string(cmd).expect("Command serialization is infallible");
     trace!(?cmd, %json, "ls outbound");
     if let Err(e) = w.send(Message::text(json)).await {
         debug!("WS send failed; dropping client: {e}");

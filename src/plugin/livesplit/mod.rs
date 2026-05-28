@@ -13,56 +13,68 @@ use std::{
 
 use classicube_helpers::async_manager;
 use tokio::{sync::broadcast, task::JoinHandle};
-use tracing::{debug, warn};
+use tracing::debug;
 
-pub use crate::plugin::livesplit::protocol::Command;
+pub use crate::plugin::livesplit::{protocol::Command, server::BIND_ADDR as SERVER_BIND_ADDR};
 use crate::plugin::module::Module;
 
 const BROADCAST_CAPACITY: usize = 64;
 
+/// Where the client task dials. Matches the default LiveSplit desktop
+/// server endpoint (`/livesplit` path is required by the C# server).
+pub const CLIENT_TARGET_URL: &str = "ws://127.0.0.1:16834/livesplit";
+
 thread_local! {
     static CMD_TX: RefCell<Option<broadcast::Sender<Command>>> = const { RefCell::new(None) };
     static SERVER_CONNECTED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
-    static CLIENT_HANDLE: RefCell<Option<JoinHandle<()>>> = const { RefCell::new(None) };
-    static CLIENT_URL: RefCell<Option<String>> = const { RefCell::new(None) };
     static CLIENT_CONNECTED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
 }
 
 pub struct LiveSplitModule {
     server_handle: JoinHandle<()>,
+    client_handle: JoinHandle<()>,
 }
 
 impl LiveSplitModule {
     pub fn init() -> Self {
-        let (tx, server_rx) = broadcast::channel(BROADCAST_CAPACITY);
+        let (tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let server_rx = tx.subscribe();
+        let client_rx = tx.subscribe();
+
         let server_connected = Arc::new(AtomicBool::new(false));
+        let client_connected = Arc::new(AtomicBool::new(false));
 
         CMD_TX.with_borrow_mut(|c| *c = Some(tx));
         SERVER_CONNECTED.with_borrow_mut(|c| *c = Some(server_connected.clone()));
+        CLIENT_CONNECTED.with_borrow_mut(|c| *c = Some(client_connected.clone()));
 
         let server_handle = async_manager::spawn(server::run(server_rx, server_connected));
-        Self { server_handle }
+        let client_handle = async_manager::spawn(client::run(
+            CLIENT_TARGET_URL.to_string(),
+            client_rx,
+            client_connected,
+        ));
+
+        Self {
+            server_handle,
+            client_handle,
+        }
     }
 }
 
 impl Module for LiveSplitModule {
     fn free(&mut self) {
-        if let Some(handle) = CLIENT_HANDLE.with_borrow_mut(|h| h.take()) {
-            handle.abort();
-        }
-        CLIENT_URL.with_borrow_mut(|u| {
-            u.take();
-        });
-        CLIENT_CONNECTED.with_borrow_mut(|c| {
-            c.take();
-        });
+        self.client_handle.abort();
+        self.server_handle.abort();
         CMD_TX.with_borrow_mut(|c| {
             c.take();
         });
         SERVER_CONNECTED.with_borrow_mut(|c| {
             c.take();
         });
-        self.server_handle.abort();
+        CLIENT_CONNECTED.with_borrow_mut(|c| {
+            c.take();
+        });
         debug!("LiveSplit module freed; server + client tasks aborted");
     }
 }
@@ -86,48 +98,10 @@ pub fn server_connected() -> bool {
     })
 }
 
-pub fn client_target_url() -> Option<String> {
-    CLIENT_URL.with_borrow(|u| u.clone())
-}
-
 pub fn client_connected() -> bool {
     CLIENT_CONNECTED.with_borrow(|c| {
         c.as_ref()
             .map(|c| c.load(Ordering::Relaxed))
             .unwrap_or(false)
     })
-}
-
-/// Start (or replace) the client task that dials `url`. The task
-/// reconnects with exponential backoff until [`disconnect`] is called or
-/// the plugin is freed.
-pub fn connect(url: String) {
-    disconnect();
-
-    let rx = match CMD_TX.with_borrow(|c| c.as_ref().map(broadcast::Sender::subscribe)) {
-        Some(rx) => rx,
-        None => {
-            warn!("livesplit::connect called while module is inactive");
-            return;
-        }
-    };
-
-    let connected = Arc::new(AtomicBool::new(false));
-    CLIENT_URL.with_borrow_mut(|u| *u = Some(url.clone()));
-    CLIENT_CONNECTED.with_borrow_mut(|c| *c = Some(connected.clone()));
-
-    let handle = async_manager::spawn(client::run(url, rx, connected));
-    CLIENT_HANDLE.with_borrow_mut(|h| *h = Some(handle));
-}
-
-pub fn disconnect() {
-    if let Some(handle) = CLIENT_HANDLE.with_borrow_mut(|h| h.take()) {
-        handle.abort();
-    }
-    CLIENT_URL.with_borrow_mut(|u| {
-        u.take();
-    });
-    CLIENT_CONNECTED.with_borrow_mut(|c| {
-        c.take();
-    });
 }

@@ -6,7 +6,7 @@ use std::{os::raw::c_int, ptr};
 use classicube_helpers::time;
 use classicube_sys::IGameComponent;
 
-pub use crate::chat::chat_print;
+pub use crate::chat::{chat_print, chat_print_async};
 
 extern "C" fn init() {
     time!("plugin::initialize()", 5000, {

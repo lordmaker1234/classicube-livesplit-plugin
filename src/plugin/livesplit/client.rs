@@ -16,7 +16,7 @@ use tokio_tungstenite::{WebSocketStream, connect_async, tungstenite};
 use tracing::{debug, info, trace, warn};
 use tungstenite::Message;
 
-use crate::plugin::livesplit::protocol::Command;
+use crate::{chat_print_async, plugin::livesplit::protocol::Command};
 
 const BACKOFF_INITIAL: Duration = Duration::from_millis(500);
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
@@ -32,6 +32,7 @@ pub async fn run(
         match connect_async(&url).await {
             Ok((ws, _resp)) => {
                 info!("connected to LiveSplit at {url}");
+                chat_print_async(format!("&aLiveSplit: connected to {url}"));
                 connected.store(true, Ordering::Relaxed);
                 backoff = BACKOFF_INITIAL;
 
@@ -39,6 +40,7 @@ pub async fn run(
 
                 connected.store(false, Ordering::Relaxed);
                 info!("disconnected from LiveSplit at {url}; will reconnect");
+                chat_print_async(format!("&eLiveSplit: disconnected from {url}"));
             }
             Err(e) => {
                 debug!("dial failed for {url}: {e}");
