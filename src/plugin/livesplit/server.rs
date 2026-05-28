@@ -80,7 +80,8 @@ pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<At
                         continue;
                     }
                 };
-                if !send_command(&mut ws, &cmd).await {
+                if let Some(w) = ws.as_mut() && send_command(w, &cmd).await.is_err() {
+                    ws = None;
                     connected.store(false, Ordering::Relaxed);
                     chat_print_async("&eLiveSplit: server client disconnected".to_string());
                 }
@@ -113,7 +114,8 @@ pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<At
             }
 
             _ = ping.tick() => {
-                if ws.is_some() && !send_command(&mut ws, &Command::Ping).await {
+                if let Some(w) = ws.as_mut() && send_command(w, &Command::Ping).await.is_err() {
+                    ws = None;
                     connected.store(false, Ordering::Relaxed);
                     chat_print_async("&eLiveSplit: server client disconnected".to_string());
                 }
@@ -122,21 +124,15 @@ pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<At
     }
 }
 
-/// Serialize and send `cmd` to the current client. Returns `false` if there
-/// was no client or the send failed (and the client was dropped).
-async fn send_command(ws: &mut Option<WebSocketStream<TcpStream>>, cmd: &Command) -> bool {
-    let Some(w) = ws.as_mut() else {
-        trace!(?cmd, "ls outbound dropped (no client)");
-        return false;
-    };
+async fn send_command(
+    ws: &mut WebSocketStream<TcpStream>,
+    cmd: &Command,
+) -> Result<(), tungstenite::Error> {
     let json = serde_json::to_string(cmd).expect("Command serialization is infallible");
     trace!(?cmd, %json, "ls outbound");
-    if let Err(e) = w.send(Message::text(json)).await {
+    ws.send(Message::text(json)).await.inspect_err(|e| {
         debug!("WS send failed; dropping client: {e}");
-        *ws = None;
-        return false;
-    }
-    true
+    })
 }
 
 async fn next_message(
