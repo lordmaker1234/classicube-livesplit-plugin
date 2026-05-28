@@ -1,0 +1,135 @@
+pub mod fixture;
+pub mod geometry;
+
+use std::{cell::RefCell, rc::Rc};
+
+use classicube_helpers::{
+    entities::{ENTITY_SELF_ID, Entity},
+    tick::TickEventHandler,
+};
+use tracing::debug;
+
+use crate::{
+    chat_print,
+    plugin::{
+        livesplit,
+        module::Module,
+        splits::geometry::{CheckpointKind, SplitsState, step},
+    },
+};
+
+thread_local! {
+    /// Shared with the tick closure so chat-command accessors (`load_fixture`,
+    /// `reset_run`, `print_status`) can mutate the same state without going
+    /// back through `MAIN_MODULE` — which would already be borrowed mutably
+    /// whenever those callbacks fire from the game thread.
+    static STATE: RefCell<Option<Rc<RefCell<SplitsState>>>> = const { RefCell::new(None) };
+}
+
+pub struct SplitsModule {
+    state: Rc<RefCell<SplitsState>>,
+    // Owned for its Drop side-effect: TickEventHandler::Drop unregisters
+    // the closure from the helpers crate's TICK_CALLBACK_HANDLERS list.
+    _tick: TickEventHandler,
+}
+
+impl SplitsModule {
+    pub fn init() -> Self {
+        let state = Rc::new(RefCell::new(SplitsState::default()));
+        STATE.with_borrow_mut(|s| *s = Some(state.clone()));
+
+        let mut tick = TickEventHandler::new();
+        {
+            let state = state.clone();
+            tick.on(move |_event| {
+                // Local player isn't materialized until a map is loaded.
+                let Some(entity) = (unsafe { Entity::from_id(ENTITY_SELF_ID) }) else {
+                    return;
+                };
+                let pos = entity.get_position();
+                let mut state = state.borrow_mut();
+                step(&mut state, pos, livesplit::send);
+            });
+        }
+        Self { state, _tick: tick }
+    }
+}
+
+impl Module for SplitsModule {
+    fn free(&mut self) {
+        // Drop the loaded track so any closure call between now and the
+        // TickEventHandler::Drop a moment later is a no-op (step()
+        // short-circuits on no track).
+        self.state.borrow_mut().track = None;
+        STATE.with_borrow_mut(|s| {
+            s.take();
+        });
+        debug!("SplitsModule freed; track cleared");
+    }
+
+    fn on_new_map_loaded(&mut self) {
+        // New map = new run attempt.
+        self.state.borrow_mut().rearm();
+    }
+}
+
+fn with_state<R>(f: impl FnOnce(&mut SplitsState) -> R) -> Option<R> {
+    STATE.with_borrow(|s| {
+        s.as_ref().map(|state| {
+            let mut state = state.borrow_mut();
+            f(&mut state)
+        })
+    })
+}
+
+pub fn load_fixture() {
+    let track = fixture::loadtest();
+    let n = track.checkpoints.len();
+    let name = track.name.clone();
+    if with_state(|s| s.load(track)).is_none() {
+        chat_print("&eLiveSplit: plugin not active");
+        return;
+    }
+    chat_print(&format!(
+        "&aLiveSplit: loaded track \"{name}\" ({n} checkpoints)"
+    ));
+}
+
+pub fn reset_run() {
+    with_state(SplitsState::rearm);
+}
+
+pub fn print_status() {
+    let Some(snapshot) = with_state(|s| {
+        s.track.as_ref().map(|t| {
+            let total = t.checkpoints.len();
+            let name = t.name.clone();
+            let fired = s.fired.iter().filter(|b| **b).count();
+            let next = t.checkpoints.get(s.next_index).map(|cp| {
+                let kind = match cp.kind {
+                    CheckpointKind::Start => "Start",
+                    CheckpointKind::Split => "Split",
+                    CheckpointKind::End => "End",
+                };
+                let label = cp.label.as_deref().unwrap_or("");
+                format!("{kind} \"{label}\"")
+            });
+            (name, total, fired, next)
+        })
+    }) else {
+        chat_print("&eLiveSplit: plugin not active");
+        return;
+    };
+    let Some((name, total, fired, next)) = snapshot else {
+        chat_print("&eLiveSplit: no track loaded (try /client LiveSplit loadtest)");
+        return;
+    };
+    chat_print(&format!(
+        "&aLiveSplit: track \"{name}\" — {fired}/{total} fired"
+    ));
+    if let Some(next) = next {
+        chat_print(&format!("&e  next: {next}"));
+    } else {
+        chat_print("&e  run complete");
+    }
+}

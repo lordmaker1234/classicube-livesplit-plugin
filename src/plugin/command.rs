@@ -9,6 +9,7 @@ use crate::{
         is_plugin_active,
         livesplit::{self, Command as LsCommand},
         module::Module,
+        splits,
     },
 };
 
@@ -22,6 +23,7 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit start | split | splitorstart");
     chat_print("&e  /client LiveSplit pause | resume | reset");
     chat_print("&e  /client LiveSplit undosplit | skipsplit");
+    chat_print("&e  /client LiveSplit loadtest | splits");
 }
 
 extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
@@ -71,9 +73,14 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         ["splitorstart"] => livesplit::send(LsCommand::SplitOrStart),
         ["pause"] => livesplit::send(LsCommand::Pause),
         ["resume"] => livesplit::send(LsCommand::Resume),
-        ["reset"] => livesplit::send(LsCommand::Reset { save_attempt: None }),
+        ["reset"] => {
+            splits::reset_run();
+            livesplit::send(LsCommand::Reset { save_attempt: None });
+        }
         ["undosplit"] => livesplit::send(LsCommand::UndoSplit),
         ["skipsplit"] => livesplit::send(LsCommand::SkipSplit),
+        ["loadtest"] => splits::load_fixture(),
+        ["splits"] => splits::print_status(),
         _ => print_usage(),
     }
 }
@@ -105,6 +112,7 @@ impl CommandModule {
                     "&a/client LiveSplit start | split | splitorstart",
                     "&a/client LiveSplit pause | resume | reset",
                     "&a/client LiveSplit undosplit | skipsplit",
+                    "&a/client LiveSplit loadtest | splits",
                 ],
             );
             cmd.register();

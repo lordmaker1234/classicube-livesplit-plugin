@@ -20,10 +20,14 @@ pub enum Command {
     // No desktop equivalent — the desktop initializes game time on first
     // `setgametime`, so `to_line()` returns `None` for this variant.
     InitializeGameTime,
-    SetGameTime { time: TimeSpan },
+    SetGameTime {
+        time: TimeSpan,
+    },
     PauseGameTime,
     ResumeGameTime,
-    SetLoadingTimes { time: TimeSpan },
+    SetLoadingTimes {
+        time: TimeSpan,
+    },
     Ping,
 }
 
