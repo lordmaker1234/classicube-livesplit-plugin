@@ -10,7 +10,7 @@ use std::{
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::mpsc::UnboundedReceiver,
+    sync::broadcast,
     time::{MissedTickBehavior, interval},
 };
 use tokio_tungstenite::{WebSocketStream, accept_async, tungstenite};
@@ -21,7 +21,7 @@ use crate::plugin::livesplit::protocol::Command;
 
 pub const BIND_ADDR: &str = "127.0.0.1:16834";
 
-pub async fn run(mut command_rx: UnboundedReceiver<Command>, connected: Arc<AtomicBool>) {
+pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<AtomicBool>) {
     let listener = match TcpListener::bind(BIND_ADDR).await {
         Ok(l) => {
             info!("LiveSplit WS server listening on ws://{BIND_ADDR}");
@@ -58,13 +58,20 @@ pub async fn run(mut command_rx: UnboundedReceiver<Command>, connected: Arc<Atom
             }
 
             cmd = command_rx.recv() => {
-                let Some(cmd) = cmd else {
-                    debug!("command channel closed; LiveSplit server shutting down");
-                    if let Some(mut old) = ws.take() {
-                        let _ = old.close(None).await;
+                let cmd = match cmd {
+                    Ok(cmd) => cmd,
+                    Err(broadcast::error::RecvError::Closed) => {
+                        debug!("command channel closed; LiveSplit server shutting down");
+                        if let Some(mut old) = ws.take() {
+                            let _ = old.close(None).await;
+                        }
+                        connected.store(false, Ordering::Relaxed);
+                        return;
                     }
-                    connected.store(false, Ordering::Relaxed);
-                    return;
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!("server lagged; dropped {n} commands");
+                        continue;
+                    }
                 };
                 if !send_command(&mut ws, &cmd).await {
                     connected.store(false, Ordering::Relaxed);

@@ -22,6 +22,8 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit start | split | splitorstart");
     chat_print("&e  /client LiveSplit pause | resume | reset");
     chat_print("&e  /client LiveSplit undosplit | skipsplit");
+    chat_print("&e  /client LiveSplit connect ws://<host>:<port>/livesplit");
+    chat_print("&e  /client LiveSplit disconnect");
 }
 
 extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
@@ -43,15 +45,19 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
 
     match args.as_slice() {
         ["status"] => {
-            let conn = if livesplit::is_connected() {
+            chat_print(&format!("&aLiveSplit v{}", env!("CARGO_PKG_VERSION")));
+            let server = if livesplit::server_connected() {
                 "&aclient connected"
             } else {
                 "&7no client"
             };
-            chat_print(&format!(
-                "&aLiveSplit v{} \u{2014} {conn}",
-                env!("CARGO_PKG_VERSION")
-            ));
+            chat_print(&format!("&e  server (ws://127.0.0.1:16834): {server}"));
+            let client = match livesplit::client_target_url() {
+                None => "&7not enabled".to_string(),
+                Some(url) if livesplit::client_connected() => format!("&aconnected to {url}"),
+                Some(url) => format!("&edialing {url}"),
+            };
+            chat_print(&format!("&e  client: {client}"));
         }
         ["start"] => livesplit::send(LsCommand::Start),
         ["split"] => livesplit::send(LsCommand::Split),
@@ -61,6 +67,14 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         ["reset"] => livesplit::send(LsCommand::Reset { save_attempt: None }),
         ["undosplit"] => livesplit::send(LsCommand::UndoSplit),
         ["skipsplit"] => livesplit::send(LsCommand::SkipSplit),
+        ["connect", url] => {
+            livesplit::connect((*url).to_string());
+            chat_print(&format!("&aLiveSplit: dialing {url}"));
+        }
+        ["disconnect"] => {
+            livesplit::disconnect();
+            chat_print("&aLiveSplit: client disconnected");
+        }
         _ => print_usage(),
     }
 }
@@ -92,6 +106,8 @@ impl CommandModule {
                     "&a/client LiveSplit start | split | splitorstart",
                     "&a/client LiveSplit pause | resume | reset",
                     "&a/client LiveSplit undosplit | skipsplit",
+                    "&a/client LiveSplit connect ws://<host>:<port>/livesplit",
+                    "&a/client LiveSplit disconnect",
                 ],
             );
             cmd.register();

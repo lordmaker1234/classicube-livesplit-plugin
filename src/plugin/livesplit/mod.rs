@@ -1,3 +1,4 @@
+mod client;
 mod server;
 
 pub mod protocol;
@@ -11,62 +12,122 @@ use std::{
 };
 
 use classicube_helpers::async_manager;
-use tokio::{sync::mpsc, task::JoinHandle};
-use tracing::debug;
+use tokio::{sync::broadcast, task::JoinHandle};
+use tracing::{debug, warn};
 
 pub use crate::plugin::livesplit::protocol::Command;
 use crate::plugin::module::Module;
 
+const BROADCAST_CAPACITY: usize = 64;
+
 thread_local! {
-    static SENDER: RefCell<Option<mpsc::UnboundedSender<Command>>> = const { RefCell::new(None) };
-    static CONNECTED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    static CMD_TX: RefCell<Option<broadcast::Sender<Command>>> = const { RefCell::new(None) };
+    static SERVER_CONNECTED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    static CLIENT_HANDLE: RefCell<Option<JoinHandle<()>>> = const { RefCell::new(None) };
+    static CLIENT_URL: RefCell<Option<String>> = const { RefCell::new(None) };
+    static CLIENT_CONNECTED: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
 }
 
 pub struct LiveSplitModule {
-    handle: JoinHandle<()>,
+    server_handle: JoinHandle<()>,
 }
 
 impl LiveSplitModule {
     pub fn init() -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
-        let connected = Arc::new(AtomicBool::new(false));
+        let (tx, server_rx) = broadcast::channel(BROADCAST_CAPACITY);
+        let server_connected = Arc::new(AtomicBool::new(false));
 
-        SENDER.with_borrow_mut(|s| *s = Some(tx));
-        CONNECTED.with_borrow_mut(|c| *c = Some(connected.clone()));
+        CMD_TX.with_borrow_mut(|c| *c = Some(tx));
+        SERVER_CONNECTED.with_borrow_mut(|c| *c = Some(server_connected.clone()));
 
-        let handle = async_manager::spawn(server::run(rx, connected));
-        Self { handle }
+        let server_handle = async_manager::spawn(server::run(server_rx, server_connected));
+        Self { server_handle }
     }
 }
 
 impl Module for LiveSplitModule {
     fn free(&mut self) {
-        SENDER.with_borrow_mut(|s| {
-            let _ = s.take();
+        if let Some(handle) = CLIENT_HANDLE.with_borrow_mut(|h| h.take()) {
+            handle.abort();
+        }
+        CLIENT_URL.with_borrow_mut(|u| {
+            u.take();
         });
-        CONNECTED.with_borrow_mut(|c| {
-            let _ = c.take();
+        CLIENT_CONNECTED.with_borrow_mut(|c| {
+            c.take();
         });
-        self.handle.abort();
-        debug!("LiveSplit module freed; server task aborted");
+        CMD_TX.with_borrow_mut(|c| {
+            c.take();
+        });
+        SERVER_CONNECTED.with_borrow_mut(|c| {
+            c.take();
+        });
+        self.server_handle.abort();
+        debug!("LiveSplit module freed; server + client tasks aborted");
     }
 }
 
-/// Fire-and-forget send of a LiveSplit command. Silently no-ops if no client
-/// is connected (or if the plugin is mid-reload).
+/// Fire-and-forget broadcast of a LiveSplit command to whichever timers
+/// are currently connected (LSO via the server side, LiveSplit desktop via
+/// the client side, or both). Silently no-ops if neither is connected.
 pub fn send(cmd: Command) {
-    SENDER.with_borrow(|s| {
-        if let Some(s) = s {
-            let _ = s.send(cmd);
+    CMD_TX.with_borrow(|c| {
+        if let Some(c) = c {
+            let _ = c.send(cmd);
         }
     });
 }
 
-/// Whether a LiveSplit WebSocket client is currently connected.
-pub fn is_connected() -> bool {
-    CONNECTED.with_borrow(|c| {
+pub fn server_connected() -> bool {
+    SERVER_CONNECTED.with_borrow(|c| {
         c.as_ref()
             .map(|c| c.load(Ordering::Relaxed))
             .unwrap_or(false)
     })
+}
+
+pub fn client_target_url() -> Option<String> {
+    CLIENT_URL.with_borrow(|u| u.clone())
+}
+
+pub fn client_connected() -> bool {
+    CLIENT_CONNECTED.with_borrow(|c| {
+        c.as_ref()
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(false)
+    })
+}
+
+/// Start (or replace) the client task that dials `url`. The task
+/// reconnects with exponential backoff until [`disconnect`] is called or
+/// the plugin is freed.
+pub fn connect(url: String) {
+    disconnect();
+
+    let rx = match CMD_TX.with_borrow(|c| c.as_ref().map(broadcast::Sender::subscribe)) {
+        Some(rx) => rx,
+        None => {
+            warn!("livesplit::connect called while module is inactive");
+            return;
+        }
+    };
+
+    let connected = Arc::new(AtomicBool::new(false));
+    CLIENT_URL.with_borrow_mut(|u| *u = Some(url.clone()));
+    CLIENT_CONNECTED.with_borrow_mut(|c| *c = Some(connected.clone()));
+
+    let handle = async_manager::spawn(client::run(url, rx, connected));
+    CLIENT_HANDLE.with_borrow_mut(|h| *h = Some(handle));
+}
+
+pub fn disconnect() {
+    if let Some(handle) = CLIENT_HANDLE.with_borrow_mut(|h| h.take()) {
+        handle.abort();
+    }
+    CLIENT_URL.with_borrow_mut(|u| {
+        u.take();
+    });
+    CLIENT_CONNECTED.with_borrow_mut(|c| {
+        c.take();
+    });
 }
