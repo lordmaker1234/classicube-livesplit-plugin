@@ -61,7 +61,8 @@ async fn run_session(pipe: NamedPipeClient, command_rx: &mut broadcast::Receiver
             cmd = command_rx.recv() => {
                 match cmd {
                     Ok(cmd) => {
-                        if send_command(&mut write_half, &cmd).await.is_err() {
+                        if let Err(e) = send_command(&mut write_half, &cmd).await {
+                            warn!(?cmd, "pipe write error; dropping client: {e}");
                             return;
                         }
                     }
@@ -83,14 +84,15 @@ async fn run_session(pipe: NamedPipeClient, command_rx: &mut broadcast::Receiver
                         line.clear();
                     }
                     Err(e) => {
-                        debug!("pipe read error: {e}");
+                        warn!("pipe read error: {e}");
                         return;
                     }
                 }
             }
 
             _ = ping.tick() => {
-                if send_command(&mut write_half, &Command::Ping).await.is_err() {
+                if let Err(e) = send_command(&mut write_half, &Command::Ping).await {
+                    warn!("pipe write error on ping; dropping client: {e}");
                     return;
                 }
             }
