@@ -5,7 +5,11 @@ use tracing::debug;
 
 use crate::{
     chat_print,
-    plugin::{is_plugin_active, module::Module},
+    plugin::{
+        is_plugin_active,
+        livesplit::{self, Command as LsCommand},
+        module::Module,
+    },
 };
 
 thread_local!(
@@ -15,6 +19,9 @@ thread_local!(
 fn print_usage() {
     chat_print("&eUsage:");
     chat_print("&e  /client LiveSplit status");
+    chat_print("&e  /client LiveSplit start | split | splitorstart");
+    chat_print("&e  /client LiveSplit pause | resume | reset");
+    chat_print("&e  /client LiveSplit undosplit | skipsplit");
 }
 
 extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
@@ -36,11 +43,24 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
 
     match args.as_slice() {
         ["status"] => {
+            let conn = if livesplit::is_connected() {
+                "&aclient connected"
+            } else {
+                "&7no client"
+            };
             chat_print(&format!(
-                "&aLiveSplit v{} \u{2014} IPC not yet implemented",
+                "&aLiveSplit v{} \u{2014} {conn}",
                 env!("CARGO_PKG_VERSION")
             ));
         }
+        ["start"] => livesplit::send(LsCommand::Start),
+        ["split"] => livesplit::send(LsCommand::Split),
+        ["splitorstart"] => livesplit::send(LsCommand::SplitOrStart),
+        ["pause"] => livesplit::send(LsCommand::Pause),
+        ["resume"] => livesplit::send(LsCommand::Resume),
+        ["reset"] => livesplit::send(LsCommand::Reset { save_attempt: None }),
+        ["undosplit"] => livesplit::send(LsCommand::UndoSplit),
+        ["skipsplit"] => livesplit::send(LsCommand::SkipSplit),
         _ => print_usage(),
     }
 }
@@ -67,7 +87,12 @@ impl CommandModule {
                 "LiveSplit",
                 c_callback,
                 false,
-                vec!["&a/client LiveSplit status"],
+                vec![
+                    "&a/client LiveSplit status",
+                    "&a/client LiveSplit start | split | splitorstart",
+                    "&a/client LiveSplit pause | resume | reset",
+                    "&a/client LiveSplit undosplit | skipsplit",
+                ],
             );
             cmd.register();
             *cell.borrow_mut() = Some(cmd);
