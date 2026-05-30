@@ -5,13 +5,14 @@ pub mod logger;
 pub mod module;
 pub mod pause_triggers;
 pub mod splits;
+pub mod track_source;
 
 use std::cell::RefCell;
 
 use crate::plugin::{
     async_manager::AsyncManagerModule, command::CommandModule, livesplit::LiveSplitModule,
     logger::LoggerModule, module::Module, pause_triggers::PauseTriggersModule,
-    splits::SplitsModule,
+    splits::SplitsModule, track_source::TrackSourceModule,
 };
 
 thread_local!(
@@ -24,6 +25,7 @@ struct MainModule {
     livesplit: LiveSplitModule,
     pause_triggers: PauseTriggersModule,
     splits: SplitsModule,
+    track_source: TrackSourceModule,
     command: CommandModule,
 }
 
@@ -34,6 +36,7 @@ impl MainModule {
         let livesplit = LiveSplitModule::init();
         let pause_triggers = PauseTriggersModule::init();
         let splits = SplitsModule::init();
+        let track_source = TrackSourceModule::init();
         let command = CommandModule::init();
 
         Self {
@@ -42,6 +45,7 @@ impl MainModule {
             livesplit,
             pause_triggers,
             splits,
+            track_source,
             command,
         }
     }
@@ -55,6 +59,7 @@ impl Module for MainModule {
             &mut self.livesplit,
             &mut self.pause_triggers,
             &mut self.splits,
+            &mut self.track_source,
             &mut self.command,
         ]
     }

@@ -84,6 +84,22 @@ mod tests {
     }
 
     #[test]
+    fn print_loadtest_encode_breakdown() {
+        use crate::chat_codec;
+
+        let track = loadtest();
+        let postcard_bytes = postcard::to_allocvec(&track).unwrap();
+        let zstd_bytes = zstd::encode_all(&*postcard_bytes, 0).unwrap();
+        let encoded = chat_codec::encode(&zstd_bytes);
+        let line = format!("&m{encoded}");
+
+        eprintln!("postcard: {} bytes", postcard_bytes.len());
+        eprintln!("zstd:     {} bytes", zstd_bytes.len());
+        eprintln!("encoded:  {} cp", encoded.chars().count());
+        eprintln!("line:     {} cp (with &m)", line.chars().count());
+    }
+
+    #[test]
     fn save_loadtest_as_lss() {
         use std::{env, fs};
 

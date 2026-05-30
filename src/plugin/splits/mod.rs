@@ -14,7 +14,7 @@ use crate::{
     plugin::{
         livesplit,
         module::Module,
-        splits::geometry::{CheckpointKind, SplitsState, step},
+        splits::geometry::{CheckpointKind, SplitsState, Track, step},
     },
 };
 
@@ -93,6 +93,28 @@ pub fn load_fixture() {
     chat_print(&format!(
         "&aLiveSplit: loaded track \"{name}\" ({n} checkpoints)"
     ));
+}
+
+/// Load a track received over the chat protocol. Returns `false` only
+/// when the plugin is mid-teardown (`STATE` is `None`); the caller
+/// (track_source receiver) treats `false` as "don't suppress the
+/// source chat line — plugin isn't active to handle it."
+pub fn load_track(track: Track) -> bool {
+    let n = track.checkpoints.len();
+    let name = track.name.clone();
+    if with_state(|s| s.load(track)).is_none() {
+        return false;
+    }
+    chat_print(&format!(
+        "&aLiveSplit: loaded track \"{name}\" ({n} checkpoints) from chat"
+    ));
+    true
+}
+
+/// Snapshot the currently-loaded `Track` for the chat-encode debug
+/// command. `None` if no track is loaded or the plugin is mid-teardown.
+pub fn current_track() -> Option<Track> {
+    with_state(|s| s.track.clone()).flatten()
 }
 
 pub fn reset_run() {

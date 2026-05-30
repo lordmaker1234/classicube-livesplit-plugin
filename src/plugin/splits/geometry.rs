@@ -1,10 +1,59 @@
+use std::io::Read;
+
+use anyhow::{Result, ensure};
 use classicube_sys::Vec3;
+use serde::{Deserialize, Serialize};
 
 use crate::plugin::livesplit::Command;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Upper bound on the postcard-decoded size of a wire-encoded `Track`.
+/// Defends against zstd-bomb payloads from hostile servers: a 4-byte
+/// crafted zstd frame can declare an arbitrarily large output, so the
+/// decoder runs in streaming mode and bails the moment the cap is
+/// exceeded. 16 KiB comfortably fits any plausible `Track` (postcard
+/// adds ~26 bytes per checkpoint plus name/label varints).
+const MAX_DECOMPRESSED_BYTES: usize = 16 * 1024;
+
+/// Wire-form quantization for AABB corners. Runtime uses `f32`, but
+/// `[f32; 3]` (12 bytes per Vec3, 24 per AABB) is the dominant cost
+/// in the postcard payload and zstd can't compress high-entropy
+/// floats. ClassiCube world coordinates are non-negative and track
+/// checkpoints are block-aligned, so the chat-protocol path
+/// quantizes each axis to `u16` with block precision. A "big" CC map
+/// is around 700 × 300 × 1000 blocks, an order of magnitude under
+/// `u16::MAX`, so `u16` is the smallest integer type that fits with
+/// margin. Postcard varints then collapse the small per-axis values
+/// (< 128) to one byte, so a typical Vec3 lands at 3 bytes on the
+/// wire instead of 12. Out-of-range values clamp; sub-block-precision
+/// corners round.
+mod vec3_serde {
+    use classicube_sys::Vec3;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "value is clamp()'d to the u16 range before the cast"
+    )]
+    fn quantize(v: f32) -> u16 {
+        v.round().clamp(0.0, f32::from(u16::MAX)) as u16
+    }
+
+    pub fn serialize<S: Serializer>(v: &Vec3, s: S) -> Result<S::Ok, S::Error> {
+        [quantize(v.x), quantize(v.y), quantize(v.z)].serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec3, D::Error> {
+        let [x, y, z] = <[u16; 3]>::deserialize(d)?;
+        Ok(Vec3::new(f32::from(x), f32::from(y), f32::from(z)))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Aabb {
+    #[serde(with = "vec3_serde")]
     pub min: Vec3,
+    #[serde(with = "vec3_serde")]
     pub max: Vec3,
 }
 
@@ -30,24 +79,53 @@ impl Aabb {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CheckpointKind {
     Start,
     Split,
     End,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub kind: CheckpointKind,
     pub aabb: Aabb,
     pub label: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Track {
     pub name: String,
     pub checkpoints: Vec<Checkpoint>,
+}
+
+impl Track {
+    /// Postcard-serialize, then zstd-compress at level 0. The output is
+    /// the canonical wire form shared between the chat-protocol path and
+    /// any future on-disk binary format.
+    pub fn encode_to_wire(&self) -> Result<Vec<u8>> {
+        let postcard_bytes = postcard::to_allocvec(self)?;
+        Ok(zstd::encode_all(&*postcard_bytes, 0)?)
+    }
+
+    /// Reverse of [`encode_to_wire`]. The zstd decode runs in streaming
+    /// mode with a [`MAX_DECOMPRESSED_BYTES`] cap so a hostile payload
+    /// can't trigger unbounded allocation before the postcard step.
+    pub fn decode_from_wire(wire: &[u8]) -> Result<Self> {
+        let mut decoder = zstd::stream::Decoder::new(wire)?;
+        let mut decompressed = Vec::new();
+        // Read one byte past the cap so we can distinguish "exactly at cap"
+        // (legitimate) from "would exceed cap" (bomb).
+        decoder
+            .by_ref()
+            .take(MAX_DECOMPRESSED_BYTES as u64 + 1)
+            .read_to_end(&mut decompressed)?;
+        ensure!(
+            decompressed.len() <= MAX_DECOMPRESSED_BYTES,
+            "decompressed track exceeds {MAX_DECOMPRESSED_BYTES}-byte cap"
+        );
+        Ok(postcard::from_bytes(&decompressed)?)
+    }
 }
 
 #[derive(Debug, Default)]

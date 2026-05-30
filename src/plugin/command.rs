@@ -10,6 +10,7 @@ use crate::{
         livesplit::{self, Command as LsCommand},
         module::Module,
         splits,
+        track_source::encode::encode_for_chat,
     },
 };
 
@@ -24,6 +25,7 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit pause | resume | reset");
     chat_print("&e  /client LiveSplit undosplit | skipsplit");
     chat_print("&e  /client LiveSplit loadtest | splits");
+    chat_print("&e  /client LiveSplit track encode");
 }
 
 extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
@@ -81,6 +83,19 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         ["skipsplit"] => livesplit::send(LsCommand::SkipSplit),
         ["loadtest"] => splits::load_fixture(),
         ["splits"] => splits::print_status(),
+        ["track", "encode"] => match splits::current_track() {
+            None => chat_print("&eLiveSplit: no track loaded (try /client LiveSplit loadtest)"),
+            Some(track) => match encode_for_chat(&track) {
+                Ok(line) => {
+                    let cp_len = line.chars().count();
+                    chat_print(&format!(
+                        "&aLiveSplit: encoded track ({cp_len} cp); paste into /mb sign:"
+                    ));
+                    chat_print(&line);
+                }
+                Err(e) => chat_print(&format!("&cLiveSplit: encode failed: {e}")),
+            },
+        },
         _ => print_usage(),
     }
 }
@@ -113,6 +128,7 @@ impl CommandModule {
                     "&a/client LiveSplit pause | resume | reset",
                     "&a/client LiveSplit undosplit | skipsplit",
                     "&a/client LiveSplit loadtest | splits",
+                    "&a/client LiveSplit track encode",
                 ],
             );
             cmd.register();
