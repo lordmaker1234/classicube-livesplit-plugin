@@ -2,7 +2,7 @@ use std::io::Read;
 
 use anyhow::{Result, ensure};
 use classicube_sys::Vec3;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::Error as _};
 
 use crate::plugin::livesplit::Command;
 
@@ -14,47 +14,73 @@ use crate::plugin::livesplit::Command;
 /// adds ~26 bytes per checkpoint plus name/label varints).
 const MAX_DECOMPRESSED_BYTES: usize = 16 * 1024;
 
-/// Wire-form quantization for AABB corners. Runtime uses `f32`, but
-/// `[f32; 3]` (12 bytes per Vec3, 24 per AABB) is the dominant cost
-/// in the postcard payload and zstd can't compress high-entropy
-/// floats. ClassiCube world coordinates are non-negative and track
-/// checkpoints are block-aligned, so the chat-protocol path
-/// quantizes each axis to `u16` with block precision. A "big" CC map
-/// is around 700 × 300 × 1000 blocks, an order of magnitude under
-/// `u16::MAX`, so `u16` is the smallest integer type that fits with
-/// margin. Postcard varints then collapse the small per-axis values
-/// (< 128) to one byte, so a typical Vec3 lands at 3 bytes on the
-/// wire instead of 12. Out-of-range values clamp; sub-block-precision
-/// corners round.
-mod vec3_serde {
-    use classicube_sys::Vec3;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+/// Runtime keeps `min`/`max` as `Vec3<f32>`, but the chat wire form
+/// is the manual [`Serialize`] / [`Deserialize`] impl below — `min`
+/// quantized to `[u16; 3]` (block precision) and `size = max - min`
+/// as `[u8; 3]`. ClassiCube world coords are non-negative and a
+/// "big" CC map is roughly 700 × 300 × 1000 blocks, an order of
+/// magnitude under `u16::MAX`, so `u16` covers any `min` with
+/// margin; checkpoint volumes are typically a handful of blocks per
+/// axis, so `u8` covers any `size` without ever triggering postcard's
+/// 2-byte varint for the alternative `max: u16` form. Out-of-range
+/// `min` values clamp; serialization errors if any axis extent
+/// exceeds 255 blocks.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "value is clamp()'d to the u16 range before the cast"
+)]
+fn quantize_axis(v: f32) -> u16 {
+    v.round().clamp(0.0, f32::from(u16::MAX)) as u16
+}
 
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "value is clamp()'d to the u16 range before the cast"
-    )]
-    fn quantize(v: f32) -> u16 {
-        v.round().clamp(0.0, f32::from(u16::MAX)) as u16
-    }
+fn vec3_to_u16(v: Vec3) -> [u16; 3] {
+    [quantize_axis(v.x), quantize_axis(v.y), quantize_axis(v.z)]
+}
 
-    pub fn serialize<S: Serializer>(v: &Vec3, s: S) -> Result<S::Ok, S::Error> {
-        [quantize(v.x), quantize(v.y), quantize(v.z)].serialize(s)
-    }
+fn u16_to_vec3([x, y, z]: [u16; 3]) -> Vec3 {
+    Vec3::new(f32::from(x), f32::from(y), f32::from(z))
+}
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec3, D::Error> {
-        let [x, y, z] = <[u16; 3]>::deserialize(d)?;
-        Ok(Vec3::new(f32::from(x), f32::from(y), f32::from(z)))
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Aabb {
+    pub min: Vec3,
+    pub max: Vec3,
+}
+
+impl Serialize for Aabb {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let min = vec3_to_u16(self.min);
+        let max = vec3_to_u16(self.max);
+        let to_u8 = |extent: u16| {
+            u8::try_from(extent).map_err(|_| {
+                S::Error::custom(format!(
+                    "AABB extent {extent} exceeds 255 blocks on one axis (chat wire-form cap)"
+                ))
+            })
+        };
+        let size = [
+            to_u8(max[0].saturating_sub(min[0]))?,
+            to_u8(max[1].saturating_sub(min[1]))?,
+            to_u8(max[2].saturating_sub(min[2]))?,
+        ];
+        (min, size).serialize(s)
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Aabb {
-    #[serde(with = "vec3_serde")]
-    pub min: Vec3,
-    #[serde(with = "vec3_serde")]
-    pub max: Vec3,
+impl<'de> Deserialize<'de> for Aabb {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (min, size): ([u16; 3], [u8; 3]) = Deserialize::deserialize(d)?;
+        let max = [
+            min[0].saturating_add(u16::from(size[0])),
+            min[1].saturating_add(u16::from(size[1])),
+            min[2].saturating_add(u16::from(size[2])),
+        ];
+        Ok(Aabb {
+            min: u16_to_vec3(min),
+            max: u16_to_vec3(max),
+        })
+    }
 }
 
 impl Aabb {
