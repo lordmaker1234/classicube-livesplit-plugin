@@ -133,7 +133,7 @@ pub fn print_status() {
                     CheckpointKind::Split => "Split",
                     CheckpointKind::End => "End",
                 };
-                let label = cp.label.as_deref().unwrap_or("");
+                let label = cp.label.as_str();
                 format!("{kind} \"{label}\"")
             });
             (name, total, fired, next)

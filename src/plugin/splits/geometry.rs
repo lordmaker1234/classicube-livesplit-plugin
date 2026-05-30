@@ -116,7 +116,7 @@ pub enum CheckpointKind {
 pub struct Checkpoint {
     pub kind: CheckpointKind,
     pub aabb: Aabb,
-    pub label: Option<String>,
+    pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -132,7 +132,7 @@ pub struct Track {
 #[derive(Serialize, Deserialize)]
 struct WireCheckpoint {
     aabb: Aabb,
-    label: Option<String>,
+    label: String,
 }
 
 /// The position-implicit `CheckpointKind` rule shared by the encode
@@ -317,7 +317,7 @@ mod tests {
         Checkpoint {
             kind,
             aabb: aabb(min, max),
-            label: None,
+            label: String::new(),
         }
     }
 

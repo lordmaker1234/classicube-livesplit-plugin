@@ -52,7 +52,7 @@ fn checkpoint(
             min: Vec3::new(min.0, min.1, min.2),
             max: Vec3::new(max.0, max.1, max.2),
         },
-        label: Some(label.into()),
+        label: label.into(),
     }
 }
 
@@ -79,7 +79,7 @@ mod tests {
     fn loadtest_labels_are_populated() {
         let t = loadtest();
         for cp in &t.checkpoints {
-            assert!(cp.label.is_some());
+            assert!(!cp.label.is_empty());
         }
     }
 

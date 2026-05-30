@@ -43,7 +43,7 @@ mod tests {
                         Vec3::new(i as f32, 0.0, 0.0),
                         Vec3::new(i as f32 + 1.0, 1.0, 1.0),
                     ),
-                    label: None,
+                    label: String::new(),
                 })
                 .collect(),
         }
