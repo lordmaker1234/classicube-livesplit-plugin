@@ -1,6 +1,7 @@
 use std::{cell::RefCell, os::raw::c_int, slice};
 
-use classicube_sys::{OwnedChatCommand, cc_string};
+use classicube_helpers::chat;
+use classicube_sys::{Clipboard_SetText, OwnedChatCommand, OwnedString, cc_string};
 use tracing::debug;
 
 use crate::{
@@ -26,6 +27,27 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit undosplit | skipsplit");
     chat_print("&e  /client LiveSplit loadtest | splits");
     chat_print("&e  /client LiveSplit track encode");
+    chat_print("&e  /client LiveSplit mb <subcmd ...>  (sends /mb <subcmd ...> <track>)");
+    chat_print("&e  /client LiveSplit nas               (copies `msg <track>` to clipboard)");
+}
+
+/// Encode the currently loaded track for chat delivery, chat-printing
+/// the standard error message on `None`/`Err` and returning `Some` only
+/// on success. Shared between the `track encode`, `mb`, and `nas` arms.
+fn encode_track_or_print_error() -> Option<String> {
+    match splits::current_track() {
+        None => {
+            chat_print("&eLiveSplit: no track loaded (try /client LiveSplit loadtest)");
+            None
+        }
+        Some(track) => match encode_for_chat(&track) {
+            Ok(line) => Some(line),
+            Err(e) => {
+                chat_print(&format!("&cLiveSplit: encode failed: {e}"));
+                None
+            }
+        },
+    }
 }
 
 extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
@@ -83,19 +105,33 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         ["skipsplit"] => livesplit::send(LsCommand::SkipSplit),
         ["loadtest"] => splits::load_fixture(),
         ["splits"] => splits::print_status(),
-        ["track", "encode"] => match splits::current_track() {
-            None => chat_print("&eLiveSplit: no track loaded (try /client LiveSplit loadtest)"),
-            Some(track) => match encode_for_chat(&track) {
-                Ok(line) => {
-                    let cp_len = line.chars().count();
-                    chat_print(&format!(
-                        "&aLiveSplit: encoded track ({cp_len} cp); paste into /mb sign:"
-                    ));
-                    chat_print(&line);
+        ["track", "encode"] => {
+            if let Some(line) = encode_track_or_print_error() {
+                let cp_len = line.chars().count();
+                chat_print(&format!(
+                    "&aLiveSplit: encoded track ({cp_len} cp); paste into /mb sign:"
+                ));
+                chat_print(&line);
+            }
+        }
+        ["mb" | "messageblock", rest @ ..] if !rest.is_empty() => {
+            if let Some(line) = encode_track_or_print_error() {
+                chat::send(format!("/mb {} {}", rest.join(" "), line));
+            }
+        }
+        ["nas"] => {
+            if let Some(line) = encode_track_or_print_error() {
+                let clip = format!("msg {line}");
+                let cp_len = clip.chars().count();
+                let owned = OwnedString::new(&clip);
+                unsafe {
+                    Clipboard_SetText(owned.as_cc_string());
                 }
-                Err(e) => chat_print(&format!("&cLiveSplit: encode failed: {e}")),
-            },
-        },
+                chat_print(&format!(
+                    "&aLiveSplit: copied NAS line ({cp_len} cp) to clipboard"
+                ));
+            }
+        }
         _ => print_usage(),
     }
 }
@@ -129,6 +165,8 @@ impl CommandModule {
                     "&a/client LiveSplit undosplit | skipsplit",
                     "&a/client LiveSplit loadtest | splits",
                     "&a/client LiveSplit track encode",
+                    "&a/client LiveSplit mb <subcmd ...>",
+                    "&a/client LiveSplit nas",
                 ],
             );
             cmd.register();
