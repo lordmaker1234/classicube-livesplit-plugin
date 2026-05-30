@@ -42,7 +42,13 @@ mod tests {
             name: "T".into(),
             checkpoints: (0..n)
                 .map(|i| Checkpoint {
-                    kind: CheckpointKind::Split,
+                    kind: if i == 0 {
+                        CheckpointKind::Start
+                    } else if i + 1 == n {
+                        CheckpointKind::End
+                    } else {
+                        CheckpointKind::Split
+                    },
                     aabb: Aabb::new(
                         Vec3::new(i as f32, 0.0, 0.0),
                         Vec3::new(i as f32 + 1.0, 1.0, 1.0),

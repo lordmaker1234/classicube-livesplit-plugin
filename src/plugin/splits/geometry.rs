@@ -105,24 +105,94 @@ impl Aabb {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CheckpointKind {
     Start,
     Split,
     End,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Checkpoint {
     pub kind: CheckpointKind,
     pub aabb: Aabb,
     pub label: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Track {
     pub name: String,
     pub checkpoints: Vec<Checkpoint>,
+}
+
+/// Wire-only twin of [`Checkpoint`] used by `Track`'s manual serde
+/// impl. `kind` is implied by position (see [`expected_kind`]) so it's
+/// absent from the wire form; the encode side validates the convention
+/// and the decode side reconstructs it.
+#[derive(Serialize, Deserialize)]
+struct WireCheckpoint {
+    aabb: Aabb,
+    label: Option<String>,
+}
+
+/// The position-implicit `CheckpointKind` rule shared by the encode
+/// validator and the decode reconstructor: index 0 → `Start`, last
+/// index → `End`, middle → `Split`. `SplitsState::step()` already
+/// hard-relies on this layout (a misplaced `Start` would clear
+/// `fired[]` mid-run; a `Split`/`End` at index 0 would never fire
+/// because `next_index = 0` at load), so dropping the discriminant
+/// from the wire form is a free byte saving rather than a relaxation
+/// of behavior.
+fn expected_kind(i: usize, n: usize) -> CheckpointKind {
+    if i == 0 {
+        CheckpointKind::Start
+    } else if i + 1 == n {
+        CheckpointKind::End
+    } else {
+        CheckpointKind::Split
+    }
+}
+
+impl Serialize for Track {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let n = self.checkpoints.len();
+        for (i, cp) in self.checkpoints.iter().enumerate() {
+            let expected = expected_kind(i, n);
+            if cp.kind != expected {
+                return Err(S::Error::custom(format!(
+                    "checkpoint[{i}] kind is {:?}, wire form requires {expected:?} \
+                     (position-implicit: index 0 = Start, last = End, middle = Split)",
+                    cp.kind
+                )));
+            }
+        }
+        let wires: Vec<WireCheckpoint> = self
+            .checkpoints
+            .iter()
+            .map(|cp| WireCheckpoint {
+                aabb: cp.aabb,
+                label: cp.label.clone(),
+            })
+            .collect();
+        (&self.name, &wires).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Track {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let (name, wires): (String, Vec<WireCheckpoint>) = Deserialize::deserialize(d)?;
+        let n = wires.len();
+        let checkpoints = wires
+            .into_iter()
+            .enumerate()
+            .map(|(i, w)| Checkpoint {
+                kind: expected_kind(i, n),
+                aabb: w.aabb,
+                label: w.label,
+            })
+            .collect();
+        Ok(Track { name, checkpoints })
+    }
 }
 
 impl Track {
@@ -407,5 +477,65 @@ mod tests {
         assert_eq!(state.next_index, 0);
         assert_eq!(state.fired, vec![false; 4]);
         assert_eq!(state.last_inside, vec![false; 4]);
+    }
+
+    #[test]
+    fn track_round_trips_through_wire_with_implicit_kind() {
+        let original = linear_track();
+        let wire = original.encode_to_wire().unwrap();
+        let decoded = Track::decode_from_wire(&wire).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn track_round_trips_two_checkpoint_track() {
+        let original = Track {
+            name: "minimal".into(),
+            checkpoints: vec![
+                cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+                cp(CheckpointKind::End, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            ],
+        };
+        let wire = original.encode_to_wire().unwrap();
+        let decoded = Track::decode_from_wire(&wire).unwrap();
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn track_serialize_rejects_misplaced_start() {
+        let bad = Track {
+            name: "bad".into(),
+            checkpoints: vec![
+                cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+                cp(CheckpointKind::Start, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+                cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+            ],
+        };
+        assert!(bad.encode_to_wire().is_err());
+    }
+
+    #[test]
+    fn track_serialize_rejects_misplaced_end() {
+        let bad = Track {
+            name: "bad".into(),
+            checkpoints: vec![
+                cp(CheckpointKind::End, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+                cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+                cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+            ],
+        };
+        assert!(bad.encode_to_wire().is_err());
+    }
+
+    #[test]
+    fn track_serialize_rejects_split_at_index_zero() {
+        let bad = Track {
+            name: "bad".into(),
+            checkpoints: vec![
+                cp(CheckpointKind::Split, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+                cp(CheckpointKind::End, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            ],
+        };
+        assert!(bad.encode_to_wire().is_err());
     }
 }
