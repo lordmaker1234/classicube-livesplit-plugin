@@ -139,6 +139,8 @@ pub async fn run(mut command_rx: broadcast::Receiver<Command>, connected: Arc<At
                         connected.store(true, Ordering::Relaxed);
                         info!("LiveSplit client connected from {peer}");
                         chat_print_async(format!("&aLiveSplit: server client connected ({peer})"));
+                        #[cfg(debug_assertions)]
+                        maybe_auto_join_dev_server();
                     }
                     Err(e) => warn!("WS handshake failed from {peer}: {e}"),
                 }
@@ -312,4 +314,41 @@ async fn wait_reader_exit(conn: &mut Option<Connection>) {
         }
         None => future::pending().await,
     }
+}
+
+/// Debug-only convenience: when the dev's account ("Floaty") connects a
+/// LiveSplit client to our WS server, auto-issue `/j spiralp+livesplit`
+/// so the iteration loop ends on the development map rather than wherever
+/// the game last left off. Real builds strip this entirely.
+#[cfg(debug_assertions)]
+fn maybe_auto_join_dev_server() {
+    use classicube_helpers::{chat, entities::ENTITY_SELF_ID, tab_list::TabListEntry};
+
+    async_manager::spawn_on_main_thread(async {
+        let Some(entry) = (unsafe { TabListEntry::from_id(ENTITY_SELF_ID) }) else {
+            return;
+        };
+        let name = strip_color_codes(&entry.get_real_name());
+        if name == "Floaty" {
+            chat::send("/j spiralp+livesplit");
+        }
+    });
+}
+
+/// Remove every `&X` color code (X = ASCII alphanumeric) from `s`. Names
+/// in the tab list can carry server-applied color codes anywhere in the
+/// string, so the single-leading-strip used by the chat-track decoder
+/// isn't enough here.
+#[cfg(debug_assertions)]
+fn strip_color_codes(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' && chars.peek().is_some_and(char::is_ascii_alphanumeric) {
+            chars.next();
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
