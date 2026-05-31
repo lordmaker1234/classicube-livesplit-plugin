@@ -1,7 +1,10 @@
 pub mod fixture;
 pub mod geometry;
 
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 use classicube_helpers::{
     entities::{ENTITY_SELF_ID, Entity},
@@ -26,6 +29,23 @@ thread_local! {
     /// back through `MAIN_MODULE` — which would already be borrowed mutably
     /// whenever those callbacks fire from the game thread.
     static STATE: RefCell<Option<Rc<RefCell<SplitsState>>>> = const { RefCell::new(None) };
+
+    /// Post-load notification slot. `LssStorageModule` registers a fn
+    /// here at init so it can persist newly-loaded tracks to disk
+    /// without `splits::load_track` taking a direct dep on storage.
+    /// Invoked after a successful `load_track` / `load_fixture` with
+    /// the just-loaded track and the resolved starting map.
+    static LOAD_CALLBACK: Cell<Option<LoadCallback>> = const { Cell::new(None) };
+}
+
+pub type LoadCallback = fn(&Track, Option<&str>);
+
+pub fn set_load_callback(f: LoadCallback) {
+    LOAD_CALLBACK.set(Some(f));
+}
+
+pub fn clear_load_callback() {
+    LOAD_CALLBACK.set(None);
 }
 
 pub struct SplitsModule {
@@ -130,9 +150,12 @@ pub fn load_fixture() {
     let name = track.name.clone();
     let starting_map = read_world_name();
     info!(?starting_map, "loading fixture track:\n{track:#?}");
-    if with_state(|s| s.load(track, starting_map)).is_none() {
+    if with_state(|s| s.load(track.clone(), starting_map.clone())).is_none() {
         chat_print("&eLiveSplit: plugin not active");
         return;
+    }
+    if let Some(cb) = LOAD_CALLBACK.get() {
+        cb(&track, starting_map.as_deref());
     }
     chat_print(&format!(
         "&aLiveSplit: loaded track \"{name}\" ({n} checkpoints)"
@@ -148,8 +171,11 @@ pub fn load_track(track: Track) -> bool {
     let name = track.name.clone();
     let starting_map = read_world_name();
     info!(?starting_map, "loading track from chat:\n{track:#?}");
-    if with_state(|s| s.load(track, starting_map)).is_none() {
+    if with_state(|s| s.load(track.clone(), starting_map.clone())).is_none() {
         return false;
+    }
+    if let Some(cb) = LOAD_CALLBACK.get() {
+        cb(&track, starting_map.as_deref());
     }
     chat_print(&format!(
         "&aLiveSplit: loaded track \"{name}\" ({n} checkpoints) from chat"
@@ -169,6 +195,21 @@ pub fn current_track() -> Option<Track> {
 /// mid-teardown.
 pub fn track_loaded() -> bool {
     with_state(|s| s.track.is_some()).unwrap_or(false)
+}
+
+/// Is a run mid-flight? True iff `next_index > 0` AND a final
+/// checkpoint hasn't fired yet. Used by `LssStorageModule` to gate
+/// auto-load on `on_new_map_loaded` (don't clobber an in-progress
+/// run with a track from the destination map's directory).
+pub fn run_in_progress() -> bool {
+    with_state(|s| s.next_index > 0 && s.next_index < s.fired.len()).unwrap_or(false)
+}
+
+/// Snapshot the current map name (engine `World.Name` in singleplayer
+/// / file-loaded, tab-list group prefix on multiplayer). Returns
+/// `None` if neither source resolves a non-empty name.
+pub fn current_map() -> Option<String> {
+    read_world_name()
 }
 
 pub fn reset_run() {

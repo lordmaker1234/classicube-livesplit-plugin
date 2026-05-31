@@ -27,6 +27,17 @@ thread_local!(
     static OLD_MESSAGE_HANDLER: Cell<Net_Handler> = const { Cell::new(None) };
 );
 
+// Set on `FrameOutcome::Loaded(_)`; cleared on `on_new_map_loaded`.
+// While set, a second `LS title …` in the same map is refused with a
+// chat-warn instead of triggering another `splits::load_track` + write
+// task — protects against re-broadcast spam from servers that
+// announce per-message-block. Mid-track frames (`Buffered`) and
+// `ParseError`s don't flip the latch, so a typo'd title can still be
+// retried.
+thread_local!(
+    static LOADED_THIS_MAP: Cell<bool> = const { Cell::new(false) };
+);
+
 extern "C" fn message_handler(data: *mut u8) {
     if is_plugin_active() {
         let bytes = unsafe { slice::from_raw_parts(data, 65) };
@@ -47,12 +58,19 @@ extern "C" fn message_handler(data: *mut u8) {
                     return;
                 }
                 FrameOutcome::Loaded(track) => {
+                    if LOADED_THIS_MAP.get() {
+                        chat_print(
+                            "&eLiveSplit: ignoring re-broadcast; load a new map to allow updates",
+                        );
+                        return;
+                    }
                     debug!(
                         name = track.name,
                         checkpoints = track.checkpoints.len(),
                         "received chat-protocol track"
                     );
                     if splits::load_track(track) {
+                        LOADED_THIS_MAP.set(true);
                         return;
                     }
                     // load_track returned false: plugin mid-teardown.
@@ -135,5 +153,10 @@ impl TrackSourceModule {
 impl Module for TrackSourceModule {
     fn free(&mut self) {
         uninstall_message_handler();
+        LOADED_THIS_MAP.set(false);
+    }
+
+    fn on_new_map_loaded(&mut self) {
+        LOADED_THIS_MAP.set(false);
     }
 }

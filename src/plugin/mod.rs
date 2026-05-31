@@ -2,6 +2,7 @@ pub mod async_manager;
 pub mod command;
 pub mod livesplit;
 pub mod logger;
+pub mod lss_storage;
 pub mod module;
 pub mod pause_triggers;
 pub mod splits;
@@ -11,8 +12,8 @@ use std::cell::RefCell;
 
 use crate::plugin::{
     async_manager::AsyncManagerModule, command::CommandModule, livesplit::LiveSplitModule,
-    logger::LoggerModule, module::Module, pause_triggers::PauseTriggersModule,
-    splits::SplitsModule, track_source::TrackSourceModule,
+    logger::LoggerModule, lss_storage::LssStorageModule, module::Module,
+    pause_triggers::PauseTriggersModule, splits::SplitsModule, track_source::TrackSourceModule,
 };
 
 thread_local!(
@@ -26,6 +27,7 @@ struct MainModule {
     splits: SplitsModule,
     pause_triggers: PauseTriggersModule,
     track_source: TrackSourceModule,
+    lss_storage: LssStorageModule,
     command: CommandModule,
 }
 
@@ -37,6 +39,7 @@ impl MainModule {
         let splits = SplitsModule::init();
         let pause_triggers = PauseTriggersModule::init();
         let track_source = TrackSourceModule::init();
+        let lss_storage = LssStorageModule::init();
         let command = CommandModule::init();
 
         Self {
@@ -46,6 +49,7 @@ impl MainModule {
             splits,
             pause_triggers,
             track_source,
+            lss_storage,
             command,
         }
     }
@@ -60,6 +64,16 @@ impl Module for MainModule {
         // `MapLoaded` checkpoint — the split must land on a resumed
         // timer, not a paused one. Symmetrically, `on_new_map` fires
         // `PauseGameTime` before any splits-side reaction.
+        //
+        // `lss_storage` sits **after** `track_source` so its `free()`
+        // (which clears the splits load-callback slot) runs *before*
+        // `track_source.free()` and `splits.free()` in reverse
+        // dispatch — `splits` must still have a live callback target
+        // through any pre-teardown chat broadcast that triggers
+        // `load_track`. `lss_storage` has no `on_new_map_loaded`
+        // hook itself; its autoload is tick-driven (see module doc)
+        // so it sees the *settled* map name rather than the stale one
+        // available at event time on multiplayer.
         vec![
             &mut self.logger,
             &mut self.async_manager,
@@ -67,6 +81,7 @@ impl Module for MainModule {
             &mut self.splits,
             &mut self.pause_triggers,
             &mut self.track_source,
+            &mut self.lss_storage,
             &mut self.command,
         ]
     }
