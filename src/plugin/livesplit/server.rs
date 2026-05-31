@@ -244,7 +244,11 @@ async fn send_and_await(
     cmd: &Command,
 ) -> Result<(), SendError> {
     let json = serde_json::to_string(cmd).expect("Command serialization is infallible");
-    trace!(?cmd, %json, "ls outbound");
+    if matches!(cmd, Command::Ping) {
+        trace!(?cmd, %json, "ls outbound");
+    } else {
+        info!(?cmd, %json, "ls outbound");
+    }
     write
         .send(Message::text(json))
         .await

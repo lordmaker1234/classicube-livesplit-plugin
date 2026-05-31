@@ -108,7 +108,11 @@ where
         trace!(?cmd, "ls outbound dropped (no desktop equivalent)");
         return Ok(());
     };
-    trace!(?cmd, %line, "ls outbound");
+    if matches!(cmd, Command::Ping) {
+        trace!(?cmd, %line, "ls outbound");
+    } else {
+        info!(?cmd, %line, "ls outbound");
+    }
     write_half.write_all(line.as_bytes()).await?;
     write_half.write_all(b"\n").await?;
     write_half.flush().await

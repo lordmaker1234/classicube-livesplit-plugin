@@ -9,7 +9,7 @@ use classicube_helpers::{
     tick::TickEventHandler,
 };
 use classicube_sys::World;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::{
     chat_print,
@@ -130,7 +130,7 @@ pub fn load_fixture() {
     let n = track.checkpoints.len();
     let name = track.name.clone();
     let starting_map = read_world_name();
-    debug!(?starting_map, track = ?track, "loading fixture track");
+    info!(?starting_map, "loading fixture track:\n{track:#?}");
     if with_state(|s| s.load(track, starting_map)).is_none() {
         chat_print("&eLiveSplit: plugin not active");
         return;
@@ -148,7 +148,7 @@ pub fn load_track(track: Track) -> bool {
     let n = track.checkpoints.len();
     let name = track.name.clone();
     let starting_map = read_world_name();
-    debug!(?starting_map, track = ?track, "loading track from chat");
+    info!(?starting_map, "loading track from chat:\n{track:#?}");
     if with_state(|s| s.load(track, starting_map)).is_none() {
         return false;
     }
@@ -215,7 +215,7 @@ pub fn print_status() {
         return;
     };
     chat_print(&format!(
-        "&aLiveSplit: track \"{name}\" — {fired}/{total} fired"
+        "&aLiveSplit: track \"{name}\" - {fired}/{total} fired"
     ));
     if let Some(next) = next {
         chat_print(&format!("&e  next: {next}"));
