@@ -113,3 +113,14 @@ pub fn client_connected() -> bool {
             .unwrap_or(false)
     })
 }
+
+pub fn any_connected() -> bool {
+    if server_connected() {
+        return true;
+    }
+    #[cfg(windows)]
+    if client_connected() {
+        return true;
+    }
+    false
+}

@@ -33,6 +33,15 @@ fn print_usage() {
     );
 }
 
+fn require_connected() -> bool {
+    if livesplit::any_connected() {
+        true
+    } else {
+        chat_print("&cLiveSplit: not connected (run /client LiveSplit status)");
+        false
+    }
+}
+
 /// Encode the currently loaded track for chat delivery, chat-printing
 /// the standard error message on `None`/`Err` and returning `Some` only
 /// on success. Shared between the `track encode`, `mb`, and `nas` arms.
@@ -100,17 +109,47 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                 ));
             }
         }
-        ["start"] => livesplit::send(LsCommand::Start),
-        ["split"] => livesplit::send(LsCommand::Split),
-        ["splitorstart"] => livesplit::send(LsCommand::SplitOrStart),
-        ["pause"] => livesplit::send(LsCommand::Pause),
-        ["resume"] => livesplit::send(LsCommand::Resume),
+        ["start"] => {
+            if require_connected() {
+                livesplit::send(LsCommand::Start);
+            }
+        }
+        ["split"] => {
+            if require_connected() {
+                livesplit::send(LsCommand::Split);
+            }
+        }
+        ["splitorstart"] => {
+            if require_connected() {
+                livesplit::send(LsCommand::SplitOrStart);
+            }
+        }
+        ["pause"] => {
+            if require_connected() {
+                livesplit::send(LsCommand::Pause);
+            }
+        }
+        ["resume"] => {
+            if require_connected() {
+                livesplit::send(LsCommand::Resume);
+            }
+        }
         ["reset"] => {
             splits::reset_run();
-            livesplit::send(LsCommand::Reset { save_attempt: None });
+            if require_connected() {
+                livesplit::send(LsCommand::Reset { save_attempt: None });
+            }
         }
-        ["undosplit"] => livesplit::send(LsCommand::UndoSplit),
-        ["skipsplit"] => livesplit::send(LsCommand::SkipSplit),
+        ["undosplit"] => {
+            if require_connected() {
+                livesplit::send(LsCommand::UndoSplit);
+            }
+        }
+        ["skipsplit"] => {
+            if require_connected() {
+                livesplit::send(LsCommand::SkipSplit);
+            }
+        }
         ["loadtest"] => splits::load_fixture(),
         ["splits"] => splits::print_status(),
         ["track", "encode"] => {
