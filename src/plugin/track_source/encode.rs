@@ -17,7 +17,7 @@ pub(crate) const MAX_LINE_CP: usize = 64 - 3;
 /// Layout:
 ///   line[0]   = `LS title <name>`
 ///   line[1..] = per checkpoint, in order. AABB checkpoints emit
-///               `LS start|cp|end <min> <size> [label]`, optionally
+///               `LS start|cp|endcp <min> <size> [label]`, optionally
 ///               followed by `LS label <text>` if the label overflowed
 ///               inline. Map-loaded checkpoints emit
 ///               `LS map|endmap <name>` bare, always followed by
@@ -68,7 +68,7 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
                 let kw = match cp.kind {
                     CheckpointKind::Start => "start",
                     CheckpointKind::Split => "cp",
-                    CheckpointKind::End => "end",
+                    CheckpointKind::End => "endcp",
                 };
                 let (min, size) = aabb_to_min_size(*aabb)?;
                 let coords = format!(
@@ -224,7 +224,7 @@ mod tests {
         assert!(lines[1].starts_with("LS start "));
         assert!(lines[2].starts_with("LS cp "));
         assert!(lines[3].starts_with("LS cp "));
-        assert!(lines[4].starts_with("LS end "));
+        assert!(lines[4].starts_with("LS endcp "));
     }
 
     #[test]

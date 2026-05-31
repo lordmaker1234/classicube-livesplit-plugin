@@ -26,7 +26,8 @@ enum State {
         name: String,
     },
     /// At least Start is in `slots`; the most recent checkpoint already
-    /// has its label populated. Next line is `cp` / `end` / `title`.
+    /// has its label populated. Next line is `cp` / `endcp` / `map` /
+    /// `endmap` / `title`.
     NeedNext {
         name: String,
         slots: Vec<Checkpoint>,
@@ -95,7 +96,7 @@ pub fn feed_chat_line(text: &str) -> FrameOutcome {
         "label" => parse_label(rest),
         "start" => parse_checkpoint(rest).map(|(aabb, label)| Line::Start { aabb, label }),
         "cp" => parse_checkpoint(rest).map(|(aabb, label)| Line::Cp { aabb, label }),
-        "end" => parse_checkpoint(rest).map(|(aabb, label)| Line::End { aabb, label }),
+        "endcp" => parse_checkpoint(rest).map(|(aabb, label)| Line::End { aabb, label }),
         "map" => parse_consume_to_eol(rest, "map name").map(|name| Line::Map { name }),
         "endmap" => parse_consume_to_eol(rest, "endmap name").map(|name| Line::EndMap { name }),
         other => Err(format!("unknown keyword `{other}`")),
@@ -591,7 +592,7 @@ mod tests {
     #[test]
     fn end_before_start_errors() {
         let _g = fresh();
-        let m = assert_parse_error(feed_chat_line("LS end 0,0,0 1,1,1 label"));
+        let m = assert_parse_error(feed_chat_line("LS endcp 0,0,0 1,1,1 label"));
         assert!(m.contains("no `LS start`"), "{m}");
     }
 
@@ -618,7 +619,7 @@ mod tests {
         let _g = fresh();
         assert_buffered(feed_chat_line("LS title T"));
         assert_buffered(feed_chat_line("LS start 0,0,0 1,1,1"));
-        let m = assert_parse_error(feed_chat_line("LS end 10,0,0 1,1,1 end"));
+        let m = assert_parse_error(feed_chat_line("LS endcp 10,0,0 1,1,1 end"));
         assert!(m.contains("not yet labeled"), "{m}");
     }
 
@@ -813,9 +814,9 @@ mod tests {
     fn round_trip_with_overflow_label_on_end() {
         let _g = fresh();
         // Force the End checkpoint's label past the inline cap so the
-        // finalizing line is `LS label <text>` not `LS end <coords> <label>`.
-        // Inline cp line: "LS end 30,0,0 2,4,2 <label>" = 21 + label cp.
-        // Cap is 61, so label needs > 40 cp to overflow inline.
+        // finalizing line is `LS label <text>` not `LS endcp <coords> <label>`.
+        // Inline cp line: "LS endcp 30,0,0 2,4,2 <label>" = 23 + label cp.
+        // Cap is 61, so label needs > 38 cp to overflow inline.
         let long_label = "x".repeat(45);
         let track = Track {
             name: "T".into(),
@@ -892,7 +893,7 @@ mod tests {
             "LS start 0,0,0 2,4,2 start",
             "LS cp 10,0,0 2,4,2",
             "LS label split 1",
-            "LS end 30,0,0 2,4,2 end",
+            "LS endcp 30,0,0 2,4,2 end",
         ];
         for line in &lines[..lines.len() - 1] {
             assert_buffered(feed_chat_line(line));
