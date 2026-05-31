@@ -128,6 +128,7 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                     timing_method: TimingMethod::GameTime,
                 });
                 livesplit::send(LsCommand::Start);
+                livesplit::send(LsCommand::InitializeGameTime);
             }
         }
         ["split"] => {
@@ -141,6 +142,7 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                     timing_method: TimingMethod::GameTime,
                 });
                 livesplit::send(LsCommand::SplitOrStart);
+                livesplit::send(LsCommand::InitializeGameTime);
             }
         }
         ["pause"] => {

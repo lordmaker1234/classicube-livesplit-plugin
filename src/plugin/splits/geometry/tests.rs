@@ -55,11 +55,12 @@ fn variant_name(c: &Command) -> Option<&'static str> {
     match c {
         Command::Start => Some("Start"),
         Command::Split => Some("Split"),
-        // Timing-method commands are bundled with `Start` and asserted
-        // separately in `start_is_preceded_by_set_current_timing_method`;
+        // SetCurrentTimingMethod + InitializeGameTime are bundled with
+        // `Start` and asserted separately in
+        // `start_is_bundled_with_set_timing_method_and_initialize_game_time`;
         // filter them out of the sequence helper so geometry tests can
         // continue to assert against fire-event names alone.
-        Command::SetCurrentTimingMethod { .. } => None,
+        Command::SetCurrentTimingMethod { .. } | Command::InitializeGameTime => None,
         _ => Some("Other"),
     }
 }
@@ -106,12 +107,16 @@ fn aabb_new_canonicalizes_swapped_corners() {
 }
 
 #[test]
-fn start_is_preceded_by_set_current_timing_method() {
+fn start_is_bundled_with_set_timing_method_and_initialize_game_time() {
     // Bundled with `Command::Start`: every Start fired by the geometry
-    // layer is immediately preceded by
-    // `SetCurrentTimingMethod { GameTime }` so the timer is in game-time
-    // mode before the run begins (the pause/resume-game-time commands
-    // emitted on map loads only affect the displayed timer in that mode).
+    // layer emits `SetCurrentTimingMethod { GameTime }` first (so the
+    // timer is in game-time mode before the run begins) and
+    // `InitializeGameTime` immediately after (so LSO's game-time field
+    // becomes `Some(0)` instead of staying blank until a later
+    // pause/resume-game-time accidentally initializes it as a side
+    // effect via `set_loading_times`). Order matters: `Start` must come
+    // before `InitializeGameTime` because livesplit-core's
+    // `initialize_game_time()` errors with `NoRunInProgress` otherwise.
     use crate::plugin::livesplit::protocol::TimingMethod;
 
     // AABB Start.
@@ -129,6 +134,7 @@ fn start_is_preceded_by_set_current_timing_method() {
                     timing_method: TimingMethod::GameTime,
                 },
                 Command::Start,
+                Command::InitializeGameTime,
             ]
         ),
         "AABB Start bundling: {cmds:?}",
@@ -154,6 +160,7 @@ fn start_is_preceded_by_set_current_timing_method() {
                     timing_method: TimingMethod::GameTime,
                 },
                 Command::Start,
+                Command::InitializeGameTime,
             ]
         ),
         "MapLoaded Start bundling: {cmds:?}",

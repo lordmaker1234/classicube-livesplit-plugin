@@ -235,6 +235,7 @@ pub fn step<F: FnMut(Command)>(
                     timing_method: TimingMethod::GameTime,
                 });
                 send(Command::Start);
+                send(Command::InitializeGameTime);
             }
             CheckpointKind::Split | CheckpointKind::End
                 if i == state.next_index && !state.fired[i] =>
@@ -323,6 +324,7 @@ pub fn step_on_map_loaded<F: FnMut(Command)>(state: &mut SplitsState, map_name: 
                     timing_method: TimingMethod::GameTime,
                 });
                 send(Command::Start);
+                send(Command::InitializeGameTime);
             }
             CheckpointKind::Split | CheckpointKind::End
                 if i == state.next_index && !state.fired[i] =>
