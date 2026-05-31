@@ -5,6 +5,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use classicube_helpers::{
     entities::{ENTITY_SELF_ID, Entity},
+    tab_list::TabListEntry,
     tick::TickEventHandler,
 };
 use classicube_sys::World;
@@ -86,19 +87,33 @@ impl Module for SplitsModule {
     }
 }
 
-/// Snapshot the engine's `World.Name` as a Rust `String`. Returns
-/// `None` if the name is empty (singleplayer pre-load edge case).
+/// Snapshot the current map name. In singleplayer / file-loaded worlds
+/// the engine populates `World.Name` directly. The classic / CPE
+/// network protocol carries no map-name packet, so on multiplayer
+/// `World.Name` is always empty; MCGalaxy and compatible servers
+/// instead put `"On <mapname>"` in the local player's tab-list group
+/// (it's the section header the tab UI groups players by). Read that
+/// and strip the prefix.
 fn read_world_name() -> Option<String> {
     // SAFETY: `World` is the engine's `static mut _WorldData`. We're
-    // called from `on_new_map_loaded`, which fires on the game's main
-    // thread after the engine has populated `Name`. `cc_string`'s
-    // `Display` impl reads through the buffer pointer into a heap
-    // `String`, so we don't hold a borrow past this expression.
-    // `&raw const` instead of `&` avoids creating an `&static mut`
-    // reference (the Rust 2024 `static_mut_refs` lint).
+    // called from `on_new_map_loaded` / the tick callback on the main
+    // thread. `cc_string`'s `Display` impl copies through the buffer
+    // pointer into an owned `String`. `&raw const` avoids creating an
+    // `&'static mut` (the Rust 2024 `static_mut_refs` lint).
     let world_ptr = &raw const World;
     let name = unsafe { (*world_ptr).Name.to_string() };
-    if name.is_empty() { None } else { Some(name) }
+    if !name.is_empty() {
+        return Some(name);
+    }
+
+    let entry = unsafe { TabListEntry::from_id(ENTITY_SELF_ID) }?;
+    let group = entry.get_group();
+    let map = group.strip_prefix("On ")?.trim();
+    if map.is_empty() {
+        None
+    } else {
+        Some(map.to_owned())
+    }
 }
 
 fn with_state<R>(f: impl FnOnce(&mut SplitsState) -> R) -> Option<R> {
@@ -115,6 +130,7 @@ pub fn load_fixture() {
     let n = track.checkpoints.len();
     let name = track.name.clone();
     let starting_map = read_world_name();
+    debug!(?starting_map, track = ?track, "loading fixture track");
     if with_state(|s| s.load(track, starting_map)).is_none() {
         chat_print("&eLiveSplit: plugin not active");
         return;
@@ -132,6 +148,7 @@ pub fn load_track(track: Track) -> bool {
     let n = track.checkpoints.len();
     let name = track.name.clone();
     let starting_map = read_world_name();
+    debug!(?starting_map, track = ?track, "loading track from chat");
     if with_state(|s| s.load(track, starting_map)).is_none() {
         return false;
     }
