@@ -242,10 +242,32 @@ pub fn step<F: FnMut(Command)>(
 /// a single discrete event. Sequential and one-shot rules match
 /// [`step`]: a Start always re-arms; Split/End only fire when `i ==
 /// next_index`.
+///
+/// Off-route guard: if `map_name` is neither `state.starting_map` nor
+/// the target of any `Trigger::MapLoaded` in the track, the player has
+/// warped outside the track's map set. When a run is in progress
+/// (`0 < next_index < n`) we emit `Command::Reset` and re-arm the run
+/// locally; otherwise (pre-Start or post-End) we leave state alone so
+/// the player can come back and start fresh.
 pub fn step_on_map_loaded<F: FnMut(Command)>(state: &mut SplitsState, map_name: &str, mut send: F) {
     let Some(track) = state.track.as_ref() else {
         return;
     };
+
+    let on_route = state.starting_map.as_deref() == Some(map_name)
+        || track
+            .checkpoints
+            .iter()
+            .any(|cp| matches!(&cp.trigger, Trigger::MapLoaded(n) if n == map_name));
+    if !on_route {
+        let n = state.fired.len();
+        let in_progress = state.next_index > 0 && state.next_index < n;
+        if in_progress {
+            send(Command::Reset { save_attempt: None });
+            state.rearm();
+        }
+        return;
+    }
 
     for (i, cp) in track.checkpoints.iter().enumerate() {
         let Trigger::MapLoaded(name) = &cp.trigger else {

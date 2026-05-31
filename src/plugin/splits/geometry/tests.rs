@@ -240,10 +240,100 @@ fn incidental_map_load_does_not_clear_run() {
     assert_eq!(state.next_index, 2);
     assert_eq!(state.fired, vec![true, true, false, false]);
 
-    step_on_map_loaded(&mut state, "unrelated", |c| cmds.push(c));
+    // Reloading the same starting map (e.g. the player gets respawned)
+    // is on-route and must not clear the run.
+    step_on_map_loaded(&mut state, TEST_MAP, |c| cmds.push(c));
     assert_eq!(state.next_index, 2, "next_index must survive map load");
     assert_eq!(state.fired, vec![true, true, false, false]);
     assert_eq!(names(&cmds), vec!["Start", "Split"]);
+}
+
+#[test]
+fn off_route_map_load_resets_in_progress_run() {
+    // Track has no MapLoaded checkpoints, so the valid map set is just
+    // `starting_map`. Loading any other map mid-run is off-route → the
+    // run is aborted with a Reset.
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    let mut cmds = Vec::new();
+    step(&mut state, v(1.0, 1.0, 1.0), Some(TEST_MAP), |c| {
+        cmds.push(c)
+    }); // Start
+    step(&mut state, v(11.0, 1.0, 1.0), Some(TEST_MAP), |c| {
+        cmds.push(c)
+    }); // Split₁
+    assert_eq!(state.next_index, 2);
+
+    step_on_map_loaded(&mut state, "unrelated", |c| cmds.push(c));
+    assert!(matches!(cmds.last(), Some(Command::Reset { .. })));
+    assert_eq!(state.next_index, 0, "off-route warp re-arms the run");
+    assert_eq!(state.fired, vec![false; 4]);
+}
+
+#[test]
+fn off_route_map_load_before_run_starts_is_silent() {
+    // `next_index == 0` and no fired flags → no run in progress; warping
+    // off-route just leaves the track ready for a fresh attempt.
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    let mut cmds = Vec::new();
+    step_on_map_loaded(&mut state, "unrelated", |c| cmds.push(c));
+    assert!(cmds.is_empty());
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false; 4]);
+}
+
+#[test]
+fn off_route_map_load_after_completion_is_silent() {
+    // Run completed (`next_index == n`); warping off-route mustn't undo
+    // the celebration by sending a spurious Reset.
+    let track = Track {
+        name: "loop".into(),
+        checkpoints: vec![
+            cp_map(CheckpointKind::Start, "spawn"),
+            cp_map(CheckpointKind::End, "goal"),
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some("spawn".to_string()));
+    let mut cmds = Vec::new();
+    step_on_map_loaded(&mut state, "spawn", |c| cmds.push(c));
+    step_on_map_loaded(&mut state, "goal", |c| cmds.push(c));
+    assert_eq!(state.next_index, 2);
+    let before = cmds.len();
+
+    step_on_map_loaded(&mut state, "lobby", |c| cmds.push(c));
+    assert_eq!(cmds.len(), before, "no Reset sent after completion");
+    assert_eq!(state.next_index, 2);
+    assert_eq!(state.fired, vec![true, true]);
+}
+
+#[test]
+fn mapload_checkpoint_map_is_on_route_even_if_not_yet_eligible() {
+    // Loading a future MapLoaded checkpoint's map while still earlier
+    // in the run is on-route (no Reset) — sequential firing handles
+    // the "wrong step" case by silently not firing.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp_map(CheckpointKind::Split, "mid"),
+            cp_map(CheckpointKind::End, "goal"),
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some("home".to_string()));
+    let mut cmds = Vec::new();
+    step(&mut state, v(1.0, 1.0, 1.0), Some("home"), |c| cmds.push(c)); // Start
+    assert_eq!(state.next_index, 1);
+
+    // Skip past "mid" straight to "goal" — on-route (in MapLoaded set)
+    // but not the expected next step, so it's a no-op rather than a
+    // reset.
+    step_on_map_loaded(&mut state, "goal", |c| cmds.push(c));
+    assert_eq!(names(&cmds), vec!["Start"]);
+    assert_eq!(state.next_index, 1, "next_index must not advance");
+    assert_eq!(state.fired, vec![true, false, false]);
 }
 
 #[test]
