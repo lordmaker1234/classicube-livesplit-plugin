@@ -147,6 +147,14 @@ pub fn current_track() -> Option<Track> {
     with_state(|s| s.track.clone()).flatten()
 }
 
+/// Cheap "is a track loaded?" probe for callers that just want to gate
+/// behavior (e.g. `PauseTriggersModule` skipping pause/resume when
+/// there's nothing to time). Returns `false` if the plugin is
+/// mid-teardown.
+pub fn track_loaded() -> bool {
+    with_state(|s| s.track.is_some()).unwrap_or(false)
+}
+
 pub fn reset_run() {
     with_state(SplitsState::rearm);
 }
