@@ -1,6 +1,6 @@
 use classicube_sys::Vec3;
 
-use crate::plugin::splits::geometry::{Aabb, Checkpoint, CheckpointKind, Track};
+use crate::plugin::splits::geometry::{Aabb, Checkpoint, CheckpointKind, Track, Trigger};
 
 /// A small fixed track used by the `/client LiveSplit loadtest` chat
 /// subcommand for development. Four checkpoints (Start, two Splits, End)
@@ -48,10 +48,10 @@ fn checkpoint(
 ) -> Checkpoint {
     Checkpoint {
         kind,
-        aabb: Aabb {
+        trigger: Trigger::Aabb(Aabb {
             min: Vec3::new(min.0, min.1, min.2),
             max: Vec3::new(max.0, max.1, max.2),
-        },
+        }),
         label: label.into(),
     }
 }

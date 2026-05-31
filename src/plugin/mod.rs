@@ -23,8 +23,8 @@ struct MainModule {
     logger: LoggerModule,
     async_manager: AsyncManagerModule,
     livesplit: LiveSplitModule,
-    pause_triggers: PauseTriggersModule,
     splits: SplitsModule,
+    pause_triggers: PauseTriggersModule,
     track_source: TrackSourceModule,
     command: CommandModule,
 }
@@ -34,8 +34,8 @@ impl MainModule {
         let logger = LoggerModule::init();
         let async_manager = AsyncManagerModule::init();
         let livesplit = LiveSplitModule::init();
-        let pause_triggers = PauseTriggersModule::init();
         let splits = SplitsModule::init();
+        let pause_triggers = PauseTriggersModule::init();
         let track_source = TrackSourceModule::init();
         let command = CommandModule::init();
 
@@ -43,8 +43,8 @@ impl MainModule {
             logger,
             async_manager,
             livesplit,
-            pause_triggers,
             splits,
+            pause_triggers,
             track_source,
             command,
         }
@@ -53,12 +53,19 @@ impl MainModule {
 
 impl Module for MainModule {
     fn children(&mut self) -> Vec<&mut dyn Module> {
+        // `pause_triggers` sits **after** `splits` so reverse-dispatch
+        // (newest-first) fires `Command::ResumeGameTime` from
+        // `pause_triggers.on_new_map_loaded` *before*
+        // `splits.on_new_map_loaded` can emit `Command::Split` from a
+        // `MapLoaded` checkpoint — the split must land on a resumed
+        // timer, not a paused one. Symmetrically, `on_new_map` fires
+        // `PauseGameTime` before any splits-side reaction.
         vec![
             &mut self.logger,
             &mut self.async_manager,
             &mut self.livesplit,
-            &mut self.pause_triggers,
             &mut self.splits,
+            &mut self.pause_triggers,
             &mut self.track_source,
             &mut self.command,
         ]

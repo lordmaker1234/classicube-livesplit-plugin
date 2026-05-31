@@ -7,6 +7,7 @@ use classicube_helpers::{
     entities::{ENTITY_SELF_ID, Entity},
     tick::TickEventHandler,
 };
+use classicube_sys::World;
 use tracing::debug;
 
 use crate::{
@@ -14,7 +15,7 @@ use crate::{
     plugin::{
         livesplit,
         module::Module,
-        splits::geometry::{CheckpointKind, SplitsState, Track, step},
+        splits::geometry::{CheckpointKind, SplitsState, Track, step, step_on_map_loaded},
     },
 };
 
@@ -68,9 +69,35 @@ impl Module for SplitsModule {
     }
 
     fn on_new_map_loaded(&mut self) {
-        // New map = new run attempt.
-        self.state.borrow_mut().rearm();
+        // Post-teleport `last_inside[]` reset so edge-triggered AABB
+        // detection works for boxes the player spawns inside. Do **not**
+        // touch `fired[]` or `next_index` — a Start AABB re-arms in
+        // place via `step()`, and `MapLoaded` Start re-arms via
+        // `step_on_map_loaded`. Clobbering `fired[]` here would also
+        // break multi-map runs whose splits live in `MapLoaded`
+        // checkpoints on incidental map changes.
+        self.state.borrow_mut().last_inside.fill(false);
+
+        if let Some(name) = read_world_name() {
+            let mut state = self.state.borrow_mut();
+            step_on_map_loaded(&mut state, &name, livesplit::send);
+        }
     }
+}
+
+/// Snapshot the engine's `World.Name` as a Rust `String`. Returns
+/// `None` if the name is empty (singleplayer pre-load edge case).
+fn read_world_name() -> Option<String> {
+    // SAFETY: `World` is the engine's `static mut _WorldData`. We're
+    // called from `on_new_map_loaded`, which fires on the game's main
+    // thread after the engine has populated `Name`. `cc_string`'s
+    // `Display` impl reads through the buffer pointer into a heap
+    // `String`, so we don't hold a borrow past this expression.
+    // `&raw const` instead of `&` avoids creating an `&static mut`
+    // reference (the Rust 2024 `static_mut_refs` lint).
+    let world_ptr = &raw const World;
+    let name = unsafe { (*world_ptr).Name.to_string() };
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn with_state<R>(f: impl FnOnce(&mut SplitsState) -> R) -> Option<R> {

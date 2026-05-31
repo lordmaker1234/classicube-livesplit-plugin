@@ -90,10 +90,20 @@ pub enum CheckpointKind {
     End,
 }
 
+/// What causes a checkpoint to fire. `Aabb` is the position-driven
+/// trigger polled by [`step`] each tick; `MapLoaded` matches the
+/// engine's `World.Name` on `on_new_map_loaded` via
+/// [`step_on_map_loaded`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum Trigger {
+    Aabb(Aabb),
+    MapLoaded(String),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Checkpoint {
     pub kind: CheckpointKind,
-    pub aabb: Aabb,
+    pub trigger: Trigger,
     pub label: String,
 }
 
@@ -157,10 +167,16 @@ pub fn step<F: FnMut(Command)>(state: &mut SplitsState, pos: Vec3, mut send: F) 
     let inside_now: Vec<bool> = track
         .checkpoints
         .iter()
-        .map(|cp| cp.aabb.contains(pos))
+        .map(|cp| match &cp.trigger {
+            Trigger::Aabb(aabb) => aabb.contains(pos),
+            Trigger::MapLoaded(_) => false,
+        })
         .collect();
 
     for (i, cp) in track.checkpoints.iter().enumerate() {
+        if !matches!(cp.trigger, Trigger::Aabb(_)) {
+            continue;
+        }
         let entered = inside_now[i] && !state.last_inside[i];
         if !entered {
             continue;
@@ -187,6 +203,43 @@ pub fn step<F: FnMut(Command)>(state: &mut SplitsState, pos: Vec3, mut send: F) 
     state.last_inside = inside_now;
 }
 
+/// Map-load counterpart of [`step`]. Called once per `on_new_map_loaded`
+/// with the engine's `World.Name`. No edge detection — each callback is
+/// a single discrete event. Sequential and one-shot rules match
+/// [`step`]: a Start always re-arms; Split/End only fire when `i ==
+/// next_index`.
+pub fn step_on_map_loaded<F: FnMut(Command)>(state: &mut SplitsState, map_name: &str, mut send: F) {
+    let Some(track) = state.track.as_ref() else {
+        return;
+    };
+
+    for (i, cp) in track.checkpoints.iter().enumerate() {
+        let Trigger::MapLoaded(name) = &cp.trigger else {
+            continue;
+        };
+        if name != map_name {
+            continue;
+        }
+
+        match cp.kind {
+            CheckpointKind::Start => {
+                state.fired.iter_mut().for_each(|b| *b = false);
+                state.fired[i] = true;
+                state.next_index = i + 1;
+                send(Command::Start);
+            }
+            CheckpointKind::Split | CheckpointKind::End
+                if i == state.next_index && !state.fired[i] =>
+            {
+                state.fired[i] = true;
+                state.next_index = i + 1;
+                send(Command::Split);
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -205,7 +258,15 @@ mod tests {
     fn cp(kind: CheckpointKind, min: (f32, f32, f32), max: (f32, f32, f32)) -> Checkpoint {
         Checkpoint {
             kind,
-            aabb: aabb(min, max),
+            trigger: Trigger::Aabb(aabb(min, max)),
+            label: String::new(),
+        }
+    }
+
+    fn cp_map(kind: CheckpointKind, name: &str) -> Checkpoint {
+        Checkpoint {
+            kind,
+            trigger: Trigger::MapLoaded(name.to_string()),
             label: String::new(),
         }
     }
@@ -382,5 +443,102 @@ mod tests {
     fn aabb_wire_rejects_oversize_extent() {
         let bad = aabb((0.0, 0.0, 0.0), (300.0, 1.0, 1.0));
         assert!(aabb_to_min_size(bad).is_err());
+    }
+
+    #[test]
+    fn multi_map_route_progresses() {
+        let track = Track {
+            name: "multi".into(),
+            checkpoints: vec![
+                cp_map(CheckpointKind::Start, "a"),
+                cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+                cp_map(CheckpointKind::End, "b"),
+            ],
+        };
+        let mut state = SplitsState::default();
+        state.load(track);
+        let mut cmds = Vec::new();
+        step_on_map_loaded(&mut state, "a", |c| cmds.push(c)); // Start
+        step(&mut state, v(11.0, 1.0, 1.0), |c| cmds.push(c)); // middle Split (box)
+        step_on_map_loaded(&mut state, "b", |c| cmds.push(c)); // End
+        assert_eq!(names(&cmds), vec!["Start", "Split", "Split"]);
+        assert_eq!(state.fired, vec![true, true, true]);
+        assert_eq!(state.next_index, 3);
+    }
+
+    #[test]
+    fn incidental_map_load_does_not_clear_run() {
+        let mut state = SplitsState::default();
+        state.load(linear_track());
+        let mut cmds = Vec::new();
+        step(&mut state, v(1.0, 1.0, 1.0), |c| cmds.push(c)); // Start
+        step(&mut state, v(11.0, 1.0, 1.0), |c| cmds.push(c)); // Split₁
+        assert_eq!(state.next_index, 2);
+        assert_eq!(state.fired, vec![true, true, false, false]);
+
+        step_on_map_loaded(&mut state, "unrelated", |c| cmds.push(c));
+        assert_eq!(state.next_index, 2, "next_index must survive map load");
+        assert_eq!(state.fired, vec![true, true, false, false]);
+        assert_eq!(names(&cmds), vec!["Start", "Split"]);
+    }
+
+    #[test]
+    fn start_map_rearms_after_completion() {
+        let track = Track {
+            name: "loop".into(),
+            checkpoints: vec![
+                cp_map(CheckpointKind::Start, "spawn"),
+                cp_map(CheckpointKind::End, "goal"),
+            ],
+        };
+        let mut state = SplitsState::default();
+        state.load(track);
+        let mut cmds = Vec::new();
+        step_on_map_loaded(&mut state, "spawn", |c| cmds.push(c));
+        step_on_map_loaded(&mut state, "goal", |c| cmds.push(c));
+        assert_eq!(state.fired, vec![true, true]);
+        assert_eq!(state.next_index, 2);
+
+        step_on_map_loaded(&mut state, "spawn", |c| cmds.push(c));
+        assert_eq!(names(&cmds), vec!["Start", "Split", "Start"]);
+        assert_eq!(state.fired, vec![true, false]);
+        assert_eq!(state.next_index, 1);
+    }
+
+    #[test]
+    fn non_matching_map_name_is_noop() {
+        let track = Track {
+            name: "T".into(),
+            checkpoints: vec![
+                cp_map(CheckpointKind::Start, "a"),
+                cp_map(CheckpointKind::End, "b"),
+            ],
+        };
+        let mut state = SplitsState::default();
+        state.load(track);
+        let mut cmds = Vec::new();
+        step_on_map_loaded(&mut state, "nowhere", |c| cmds.push(c));
+        assert!(cmds.is_empty());
+        assert_eq!(state.next_index, 0);
+        assert_eq!(state.fired, vec![false, false]);
+    }
+
+    #[test]
+    fn map_loaded_split_only_fires_when_at_cursor() {
+        // Track is [Start MapLoaded "a", Split MapLoaded "b"].
+        // Loading "b" before "a" must not advance.
+        let track = Track {
+            name: "T".into(),
+            checkpoints: vec![
+                cp_map(CheckpointKind::Start, "a"),
+                cp_map(CheckpointKind::End, "b"),
+            ],
+        };
+        let mut state = SplitsState::default();
+        state.load(track);
+        let mut cmds = Vec::new();
+        step_on_map_loaded(&mut state, "b", |c| cmds.push(c));
+        assert!(cmds.is_empty());
+        assert_eq!(state.next_index, 0);
     }
 }

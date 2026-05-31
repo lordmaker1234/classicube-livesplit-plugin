@@ -1,6 +1,6 @@
 use anyhow::{Result, bail, ensure};
 
-use crate::plugin::splits::geometry::{CheckpointKind, Track, aabb_to_min_size};
+use crate::plugin::splits::geometry::{CheckpointKind, Track, Trigger, aabb_to_min_size};
 
 /// Maximum per-line length, in codepoints. ClassiCube's
 /// `INPUTWIDGET_LEN`/`STRING_SIZE` wrap point is 64; subtract 3 for the
@@ -16,9 +16,13 @@ pub(crate) const MAX_LINE_CP: usize = 64 - 3;
 ///
 /// Layout:
 ///   line[0]   = `LS title <name>`
-///   line[1..] = `LS start|cp|end <min> <size> [label]` per checkpoint, in
-///               order; each checkpoint may be followed by `LS label <text>`
-///               if its label overflowed the inline form.
+///   line[1..] = per checkpoint, in order. AABB checkpoints emit
+///               `LS start|cp|end <min> <size> [label]`, optionally
+///               followed by `LS label <text>` if the label overflowed
+///               inline. Map-loaded checkpoints emit
+///               `LS map|endmap <name>` bare, always followed by
+///               `LS label <text>` (the `<name>` slot consumes to
+///               end-of-line, leaving no inline label slot).
 pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
     let n = track.checkpoints.len();
     ensure!(
@@ -59,43 +63,71 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
     lines.push(title);
 
     for (i, cp) in track.checkpoints.iter().enumerate() {
-        let kw = match cp.kind {
-            CheckpointKind::Start => "start",
-            CheckpointKind::Split => "cp",
-            CheckpointKind::End => "end",
-        };
-        let (min, size) = aabb_to_min_size(cp.aabb)?;
-        let coords = format!(
-            "{},{},{} {},{},{}",
-            min[0], min[1], min[2], size[0], size[1], size[2]
-        );
+        match &cp.trigger {
+            Trigger::Aabb(aabb) => {
+                let kw = match cp.kind {
+                    CheckpointKind::Start => "start",
+                    CheckpointKind::Split => "cp",
+                    CheckpointKind::End => "end",
+                };
+                let (min, size) = aabb_to_min_size(*aabb)?;
+                let coords = format!(
+                    "{},{},{} {},{},{}",
+                    min[0], min[1], min[2], size[0], size[1], size[2]
+                );
 
-        let inline = if cp.label.is_empty() {
-            format!("LS {kw} {coords}")
-        } else {
-            format!("LS {kw} {coords} {}", cp.label)
-        };
-        if inline.chars().count() <= MAX_LINE_CP {
-            lines.push(inline);
-            continue;
+                let inline = if cp.label.is_empty() {
+                    format!("LS {kw} {coords}")
+                } else {
+                    format!("LS {kw} {coords} {}", cp.label)
+                };
+                if inline.chars().count() <= MAX_LINE_CP {
+                    lines.push(inline);
+                    continue;
+                }
+
+                let bare = format!("LS {kw} {coords}");
+                let bare_cp = bare.chars().count();
+                ensure!(
+                    bare_cp <= MAX_LINE_CP,
+                    "checkpoint[{i}] `{kw}` line without label is {bare_cp} cp; cap is \
+                     {MAX_LINE_CP}"
+                );
+                lines.push(bare);
+
+                let label_line = format!("LS label {}", cp.label);
+                let label_cp = label_line.chars().count();
+                ensure!(
+                    label_cp <= MAX_LINE_CP,
+                    "checkpoint[{i}] label too long: standalone `LS label` line is {label_cp} cp; \
+                     cap is {MAX_LINE_CP}"
+                );
+                lines.push(label_line);
+            }
+            Trigger::MapLoaded(name) => {
+                ensure!(!name.trim().is_empty(), "checkpoint[{i}] map name is empty");
+                let kw = match cp.kind {
+                    CheckpointKind::Start | CheckpointKind::Split => "map",
+                    CheckpointKind::End => "endmap",
+                };
+                let map_line = format!("LS {kw} {name}");
+                let map_cp = map_line.chars().count();
+                ensure!(
+                    map_cp <= MAX_LINE_CP,
+                    "checkpoint[{i}] `{kw}` line is {map_cp} cp; cap is {MAX_LINE_CP}"
+                );
+                lines.push(map_line);
+
+                let label_line = format!("LS label {}", cp.label);
+                let label_cp = label_line.chars().count();
+                ensure!(
+                    label_cp <= MAX_LINE_CP,
+                    "checkpoint[{i}] label too long: standalone `LS label` line is {label_cp} cp; \
+                     cap is {MAX_LINE_CP}"
+                );
+                lines.push(label_line);
+            }
         }
-
-        let bare = format!("LS {kw} {coords}");
-        let bare_cp = bare.chars().count();
-        ensure!(
-            bare_cp <= MAX_LINE_CP,
-            "checkpoint[{i}] `{kw}` line without label is {bare_cp} cp; cap is {MAX_LINE_CP}"
-        );
-        lines.push(bare);
-
-        let label_line = format!("LS label {}", cp.label);
-        let label_cp = label_line.chars().count();
-        ensure!(
-            label_cp <= MAX_LINE_CP,
-            "checkpoint[{i}] label too long: standalone `LS label` line is {label_cp} cp; cap is \
-             {MAX_LINE_CP}"
-        );
-        lines.push(label_line);
     }
 
     for (i, line) in lines.iter().enumerate() {
@@ -124,10 +156,18 @@ mod tests {
     ) -> Checkpoint {
         Checkpoint {
             kind,
-            aabb: Aabb {
+            trigger: Trigger::Aabb(Aabb {
                 min: Vec3::new(min.0, min.1, min.2),
                 max: Vec3::new(max.0, max.1, max.2),
-            },
+            }),
+            label: label.into(),
+        }
+    }
+
+    fn cp_map(kind: CheckpointKind, name: &str, label: &str) -> Checkpoint {
+        Checkpoint {
+            kind,
+            trigger: Trigger::MapLoaded(name.into()),
             label: label.into(),
         }
     }
@@ -383,6 +423,90 @@ mod tests {
                     "mid",
                 ),
                 cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0), "e"),
+            ],
+        };
+        assert!(encode_for_chat(&track).is_err());
+    }
+
+    #[test]
+    fn map_only_two_checkpoint_emits_map_and_endmap() {
+        let track = Track {
+            name: "M".into(),
+            checkpoints: vec![
+                cp_map(CheckpointKind::Start, "spawn", "start"),
+                cp_map(CheckpointKind::End, "goal", "end"),
+            ],
+        };
+        let lines = encode_for_chat(&track).unwrap();
+        assert_eq!(lines.len(), 1 + 2 + 2, "title + 2 cps × (kw + label)");
+        assert_lines_within_cap(&lines);
+        assert_eq!(lines[0], "LS title M");
+        assert_eq!(lines[1], "LS map spawn");
+        assert_eq!(lines[2], "LS label start");
+        assert_eq!(lines[3], "LS endmap goal");
+        assert_eq!(lines[4], "LS label end");
+    }
+
+    #[test]
+    fn mixed_aabb_and_map_interleave() {
+        let track = Track {
+            name: "T".into(),
+            checkpoints: vec![
+                cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+                cp_map(CheckpointKind::Split, "mid_map", "midmap"),
+                cp(
+                    CheckpointKind::Split,
+                    (20.0, 0.0, 0.0),
+                    (22.0, 4.0, 2.0),
+                    "s2",
+                ),
+                cp_map(CheckpointKind::End, "goal", "fin"),
+            ],
+        };
+        let lines = encode_for_chat(&track).unwrap();
+        assert_lines_within_cap(&lines);
+        assert!(lines[0].starts_with("LS title "));
+        assert!(lines[1].starts_with("LS start "));
+        assert_eq!(lines[2], "LS map mid_map");
+        assert_eq!(lines[3], "LS label midmap");
+        assert!(lines[4].starts_with("LS cp "));
+        assert_eq!(lines[5], "LS endmap goal");
+        assert_eq!(lines[6], "LS label fin");
+    }
+
+    #[test]
+    fn rejects_empty_map_name() {
+        let track = Track {
+            name: "T".into(),
+            checkpoints: vec![
+                cp_map(CheckpointKind::Start, "  ", "start"),
+                cp_map(CheckpointKind::End, "goal", "end"),
+            ],
+        };
+        assert!(encode_for_chat(&track).is_err());
+    }
+
+    #[test]
+    fn rejects_overlong_map_name() {
+        // "LS map " is 7 cp; cap 61 → name > 54 cp overflows.
+        let track = Track {
+            name: "T".into(),
+            checkpoints: vec![
+                cp_map(CheckpointKind::Start, &"x".repeat(55), "s"),
+                cp_map(CheckpointKind::End, "goal", "e"),
+            ],
+        };
+        assert!(encode_for_chat(&track).is_err());
+    }
+
+    #[test]
+    fn rejects_overlong_endmap_name() {
+        // "LS endmap " is 10 cp; cap 61 → name > 51 cp overflows.
+        let track = Track {
+            name: "T".into(),
+            checkpoints: vec![
+                cp_map(CheckpointKind::Start, "spawn", "s"),
+                cp_map(CheckpointKind::End, &"y".repeat(52), "e"),
             ],
         };
         assert!(encode_for_chat(&track).is_err());

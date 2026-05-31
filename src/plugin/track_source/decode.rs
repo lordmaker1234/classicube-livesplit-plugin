@@ -1,7 +1,7 @@
 use std::{cell::RefCell, mem};
 
 use crate::plugin::splits::geometry::{
-    Aabb, Checkpoint, CheckpointKind, Track, aabb_from_min_size,
+    Aabb, Checkpoint, CheckpointKind, Track, Trigger, aabb_from_min_size,
 };
 
 /// Result of feeding a single chat line to the receiver.
@@ -96,6 +96,8 @@ pub fn feed_chat_line(text: &str) -> FrameOutcome {
         "start" => parse_checkpoint(rest).map(|(aabb, label)| Line::Start { aabb, label }),
         "cp" => parse_checkpoint(rest).map(|(aabb, label)| Line::Cp { aabb, label }),
         "end" => parse_checkpoint(rest).map(|(aabb, label)| Line::End { aabb, label }),
+        "map" => parse_consume_to_eol(rest, "map name").map(|name| Line::Map { name }),
+        "endmap" => parse_consume_to_eol(rest, "endmap name").map(|name| Line::EndMap { name }),
         other => Err(format!("unknown keyword `{other}`")),
     };
 
@@ -115,16 +117,20 @@ enum Line {
     Start { aabb: Aabb, label: Option<String> },
     Cp { aabb: Aabb, label: Option<String> },
     End { aabb: Aabb, label: Option<String> },
+    Map { name: String },
+    EndMap { name: String },
     Label { text: String },
 }
 
 fn parse_title(rest: &str) -> Result<Line, String> {
+    parse_consume_to_eol(rest, "title name").map(|name| Line::Title { name })
+}
+
+fn parse_consume_to_eol(rest: &str, what: &str) -> Result<String, String> {
     if rest.trim().is_empty() {
-        return Err("title name is empty".to_string());
+        return Err(format!("{what} is empty"));
     }
-    Ok(Line::Title {
-        name: rest.to_string(),
-    })
+    Ok(rest.to_string())
 }
 
 fn parse_label(rest: &str) -> Result<Line, String> {
@@ -216,7 +222,7 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                     name,
                     slots: vec![Checkpoint {
                         kind: CheckpointKind::Start,
-                        aabb,
+                        trigger: Trigger::Aabb(aabb),
                         label,
                     }],
                 };
@@ -227,7 +233,7 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                     name,
                     slots: vec![Checkpoint {
                         kind: CheckpointKind::Start,
-                        aabb,
+                        trigger: Trigger::Aabb(aabb),
                         label: String::new(),
                     }],
                     awaiting_kind: CheckpointKind::Start,
@@ -235,11 +241,23 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                 FrameOutcome::Buffered
             }
         },
+        (State::NeedStart { name }, Line::Map { name: map }) => {
+            *state = State::NeedLabel {
+                name,
+                slots: vec![Checkpoint {
+                    kind: CheckpointKind::Start,
+                    trigger: Trigger::MapLoaded(map),
+                    label: String::new(),
+                }],
+                awaiting_kind: CheckpointKind::Start,
+            };
+            FrameOutcome::Buffered
+        }
         (State::NeedNext { name, mut slots }, Line::Cp { aabb, label }) => match label {
             Some(label) => {
                 slots.push(Checkpoint {
                     kind: CheckpointKind::Split,
-                    aabb,
+                    trigger: Trigger::Aabb(aabb),
                     label,
                 });
                 *state = State::NeedNext { name, slots };
@@ -248,7 +266,7 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
             None => {
                 slots.push(Checkpoint {
                     kind: CheckpointKind::Split,
-                    aabb,
+                    trigger: Trigger::Aabb(aabb),
                     label: String::new(),
                 });
                 *state = State::NeedLabel {
@@ -259,11 +277,24 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                 FrameOutcome::Buffered
             }
         },
+        (State::NeedNext { name, mut slots }, Line::Map { name: map }) => {
+            slots.push(Checkpoint {
+                kind: CheckpointKind::Split,
+                trigger: Trigger::MapLoaded(map),
+                label: String::new(),
+            });
+            *state = State::NeedLabel {
+                name,
+                slots,
+                awaiting_kind: CheckpointKind::Split,
+            };
+            FrameOutcome::Buffered
+        }
         (State::NeedNext { name, mut slots }, Line::End { aabb, label }) => match label {
             Some(label) => {
                 slots.push(Checkpoint {
                     kind: CheckpointKind::End,
-                    aabb,
+                    trigger: Trigger::Aabb(aabb),
                     label,
                 });
                 let track = Track {
@@ -275,7 +306,7 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
             None => {
                 slots.push(Checkpoint {
                     kind: CheckpointKind::End,
-                    aabb,
+                    trigger: Trigger::Aabb(aabb),
                     label: String::new(),
                 });
                 *state = State::NeedLabel {
@@ -286,6 +317,19 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
                 FrameOutcome::Buffered
             }
         },
+        (State::NeedNext { name, mut slots }, Line::EndMap { name: map }) => {
+            slots.push(Checkpoint {
+                kind: CheckpointKind::End,
+                trigger: Trigger::MapLoaded(map),
+                label: String::new(),
+            });
+            *state = State::NeedLabel {
+                name,
+                slots,
+                awaiting_kind: CheckpointKind::End,
+            };
+            FrameOutcome::Buffered
+        }
         (
             State::NeedLabel {
                 name,
@@ -323,6 +367,18 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
             FrameOutcome::ParseError("no `LS start` yet".to_string())
         }
         (taken @ State::NeedLabel { .. }, Line::Cp { .. } | Line::End { .. }) => {
+            *state = taken;
+            FrameOutcome::ParseError("previous checkpoint not yet labeled".to_string())
+        }
+        (taken @ State::Idle, Line::Map { .. } | Line::EndMap { .. }) => {
+            *state = taken;
+            FrameOutcome::ParseError("no `LS title` yet".to_string())
+        }
+        (taken @ State::NeedStart { .. }, Line::EndMap { .. }) => {
+            *state = taken;
+            FrameOutcome::ParseError("no checkpoints before `endmap`".to_string())
+        }
+        (taken @ State::NeedLabel { .. }, Line::Map { .. } | Line::EndMap { .. }) => {
             *state = taken;
             FrameOutcome::ParseError("previous checkpoint not yet labeled".to_string())
         }
@@ -379,7 +435,15 @@ mod tests {
     ) -> Checkpoint {
         Checkpoint {
             kind,
-            aabb: aabb(min, max),
+            trigger: Trigger::Aabb(aabb(min, max)),
+            label: label.into(),
+        }
+    }
+
+    fn cp_map(kind: CheckpointKind, name: &str, label: &str) -> Checkpoint {
+        Checkpoint {
+            kind,
+            trigger: Trigger::MapLoaded(name.into()),
             label: label.into(),
         }
     }
@@ -858,5 +922,123 @@ mod tests {
             ],
         };
         assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn map_only_round_trip_via_encoder() {
+        let _g = fresh();
+        let track = Track {
+            name: "M".into(),
+            checkpoints: vec![
+                cp_map(CheckpointKind::Start, "spawn", "start"),
+                cp_map(CheckpointKind::End, "goal", "end"),
+            ],
+        };
+        let lines = encode_for_chat(&track).unwrap();
+        feed_all_but_last(&lines);
+        let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+        assert_eq!(decoded, track);
+    }
+
+    #[test]
+    fn mixed_aabb_and_map_round_trip_via_encoder() {
+        let _g = fresh();
+        let track = Track {
+            name: "mix".into(),
+            checkpoints: vec![
+                cp(
+                    CheckpointKind::Start,
+                    (0.0, 0.0, 0.0),
+                    (2.0, 4.0, 2.0),
+                    "begin",
+                ),
+                cp_map(CheckpointKind::Split, "level2", "to level 2"),
+                cp(
+                    CheckpointKind::Split,
+                    (20.0, 0.0, 0.0),
+                    (22.0, 4.0, 2.0),
+                    "post-load",
+                ),
+                cp_map(CheckpointKind::End, "goal", "fin"),
+            ],
+        };
+        let lines = encode_for_chat(&track).unwrap();
+        feed_all_but_last(&lines);
+        let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+        assert_eq!(decoded, track);
+    }
+
+    #[test]
+    fn map_in_idle_errors() {
+        let _g = fresh();
+        let m = assert_parse_error(feed_chat_line("LS map spawn"));
+        assert!(m.contains("no `LS title`"), "{m}");
+    }
+
+    #[test]
+    fn endmap_in_idle_errors() {
+        let _g = fresh();
+        let m = assert_parse_error(feed_chat_line("LS endmap goal"));
+        assert!(m.contains("no `LS title`"), "{m}");
+    }
+
+    #[test]
+    fn endmap_in_need_start_errors() {
+        let _g = fresh();
+        assert_buffered(feed_chat_line("LS title T"));
+        let m = assert_parse_error(feed_chat_line("LS endmap goal"));
+        assert!(m.contains("no checkpoints before `endmap`"), "{m}");
+    }
+
+    #[test]
+    fn map_in_need_label_errors() {
+        let _g = fresh();
+        assert_buffered(feed_chat_line("LS title T"));
+        assert_buffered(feed_chat_line("LS map spawn"));
+        let m = assert_parse_error(feed_chat_line("LS map other"));
+        assert!(m.contains("not yet labeled"), "{m}");
+    }
+
+    #[test]
+    fn endmap_in_need_label_errors() {
+        let _g = fresh();
+        assert_buffered(feed_chat_line("LS title T"));
+        assert_buffered(feed_chat_line("LS map spawn"));
+        let m = assert_parse_error(feed_chat_line("LS endmap goal"));
+        assert!(m.contains("not yet labeled"), "{m}");
+    }
+
+    #[test]
+    fn empty_map_name_errors() {
+        let _g = fresh();
+        assert_buffered(feed_chat_line("LS title T"));
+        let m = assert_parse_error(feed_chat_line("LS map "));
+        assert!(m.contains("map name is empty"), "{m}");
+    }
+
+    #[test]
+    fn empty_endmap_name_errors() {
+        let _g = fresh();
+        assert_buffered(feed_chat_line("LS title T"));
+        assert_buffered(feed_chat_line("LS map spawn"));
+        assert_buffered(feed_chat_line("LS label start"));
+        let m = assert_parse_error(feed_chat_line("LS endmap "));
+        assert!(m.contains("endmap name is empty"), "{m}");
+    }
+
+    #[test]
+    fn map_name_preserves_spaces() {
+        let _g = fresh();
+        let track = Track {
+            name: "T".into(),
+            checkpoints: vec![
+                cp_map(CheckpointKind::Start, "Castle Lobby", "spawn"),
+                cp_map(CheckpointKind::End, "Final Room", "done"),
+            ],
+        };
+        let lines = encode_for_chat(&track).unwrap();
+        feed_all_but_last(&lines);
+        let decoded = assert_loaded(feed_chat_line(lines.last().unwrap()));
+        assert_eq!(decoded, track);
     }
 }
