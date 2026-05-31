@@ -14,21 +14,9 @@ fn aabb(min: (f32, f32, f32), max: (f32, f32, f32)) -> Aabb {
 }
 
 fn cp(kind: CheckpointKind, min: (f32, f32, f32), max: (f32, f32, f32)) -> Checkpoint {
-    cp_on(kind, min, max, None)
-}
-
-fn cp_on(
-    kind: CheckpointKind,
-    min: (f32, f32, f32),
-    max: (f32, f32, f32),
-    map: Option<&str>,
-) -> Checkpoint {
     Checkpoint {
         kind,
-        trigger: Trigger::Aabb {
-            aabb: aabb(min, max),
-            map: map.map(str::to_string),
-        },
+        trigger: Trigger::Aabb(aabb(min, max)),
         label: String::new(),
     }
 }
@@ -223,12 +211,7 @@ fn multi_map_route_progresses() {
         name: "multi".into(),
         checkpoints: vec![
             cp_map(CheckpointKind::Start, "a"),
-            cp_on(
-                CheckpointKind::Split,
-                (10.0, 0.0, 0.0),
-                (12.0, 4.0, 2.0),
-                Some("a"),
-            ),
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
             cp_map(CheckpointKind::End, "b"),
         ],
     };
@@ -326,7 +309,7 @@ fn map_loaded_split_only_fires_when_at_cursor() {
 // ---- AABB map scoping ----
 
 #[test]
-fn aabb_with_none_map_resolves_to_starting_map() {
+fn aabb_with_no_preceding_mapload_resolves_to_starting_map() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some("home".to_string()));
     let mut cmds = Vec::new();
@@ -336,7 +319,7 @@ fn aabb_with_none_map_resolves_to_starting_map() {
 }
 
 #[test]
-fn aabb_with_none_map_does_not_fire_on_different_world() {
+fn aabb_does_not_fire_on_different_world_than_starting_map() {
     let mut state = SplitsState::default();
     state.load(linear_track(), Some("home".to_string()));
     let mut cmds = Vec::new();
@@ -344,38 +327,6 @@ fn aabb_with_none_map_does_not_fire_on_different_world() {
     assert!(cmds.is_empty());
     assert_eq!(state.next_index, 0);
     assert_eq!(state.fired, vec![false; 4]);
-}
-
-#[test]
-fn aabb_with_some_map_only_fires_on_matching_world() {
-    let track = Track {
-        name: "T".into(),
-        checkpoints: vec![
-            cp_on(
-                CheckpointKind::Start,
-                (0.0, 0.0, 0.0),
-                (2.0, 4.0, 2.0),
-                Some("here"),
-            ),
-            cp_on(
-                CheckpointKind::End,
-                (10.0, 0.0, 0.0),
-                (12.0, 4.0, 2.0),
-                Some("here"),
-            ),
-        ],
-    };
-    let mut state = SplitsState::default();
-    state.load(track, Some("starting".to_string()));
-    let mut cmds = Vec::new();
-    // Inside Start AABB but on "starting" — doesn't match Some("here").
-    step(&mut state, v(1.0, 1.0, 1.0), Some("starting"), |c| {
-        cmds.push(c)
-    });
-    assert!(cmds.is_empty());
-    // Switch to the right world; same position now fires.
-    step(&mut state, v(1.0, 1.0, 1.0), Some("here"), |c| cmds.push(c));
-    assert_eq!(names(&cmds), vec!["Start"]);
 }
 
 #[test]
@@ -389,7 +340,7 @@ fn aabb_skipped_when_world_is_none() {
 }
 
 #[test]
-fn aabb_skipped_when_starting_map_unset_and_cp_map_none() {
+fn aabb_skipped_when_starting_map_unset_and_no_preceding_mapload() {
     let mut state = SplitsState::default();
     state.load(linear_track(), None);
     let mut cmds = Vec::new();
@@ -403,47 +354,17 @@ fn aabb_skipped_when_starting_map_unset_and_cp_map_none() {
 fn cross_map_aabb_route_only_fires_on_correct_sections() {
     // Mirrors the user's example: 3 AABBs on starting map, MapLoaded
     // split, 3 AABBs on "mapname" (last is End). Coords are identical
-    // across sections to prove the map scope discriminates.
+    // across sections to prove the derived-scope walk discriminates.
     let track = Track {
         name: "T".into(),
         checkpoints: vec![
-            cp_on(
-                CheckpointKind::Start,
-                (0.0, 0.0, 0.0),
-                (2.0, 4.0, 2.0),
-                None,
-            ),
-            cp_on(
-                CheckpointKind::Split,
-                (10.0, 0.0, 0.0),
-                (12.0, 4.0, 2.0),
-                None,
-            ),
-            cp_on(
-                CheckpointKind::Split,
-                (20.0, 0.0, 0.0),
-                (22.0, 4.0, 2.0),
-                None,
-            ),
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            cp(CheckpointKind::Split, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
             cp_map(CheckpointKind::Split, "mapname"),
-            cp_on(
-                CheckpointKind::Split,
-                (0.0, 0.0, 0.0),
-                (2.0, 4.0, 2.0),
-                Some("mapname"),
-            ),
-            cp_on(
-                CheckpointKind::Split,
-                (10.0, 0.0, 0.0),
-                (12.0, 4.0, 2.0),
-                Some("mapname"),
-            ),
-            cp_on(
-                CheckpointKind::End,
-                (20.0, 0.0, 0.0),
-                (22.0, 4.0, 2.0),
-                Some("mapname"),
-            ),
+            cp(CheckpointKind::Split, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
         ],
     };
     let mut state = SplitsState::default();
@@ -498,19 +419,9 @@ fn section1_aabb_does_not_fire_while_still_on_starting_map() {
     let track = Track {
         name: "T".into(),
         checkpoints: vec![
-            cp_on(
-                CheckpointKind::Start,
-                (0.0, 0.0, 0.0),
-                (2.0, 4.0, 2.0),
-                None,
-            ),
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
             cp_map(CheckpointKind::Split, "next"),
-            cp_on(
-                CheckpointKind::End,
-                (0.0, 0.0, 0.0),
-                (2.0, 4.0, 2.0),
-                Some("next"),
-            ),
+            cp(CheckpointKind::End, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
         ],
     };
     let mut state = SplitsState::default();

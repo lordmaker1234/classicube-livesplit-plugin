@@ -98,15 +98,14 @@ pub enum CheckpointKind {
 /// engine's `World.Name` on `on_new_map_loaded` via
 /// [`step_on_map_loaded`].
 ///
-/// `Aabb.map` scopes the box to a specific world: `Some(name)` fires
-/// only while the player is on `name`; `None` is the section-0
-/// "starting map" sentinel resolved at runtime against
-/// `SplitsState.starting_map`. Sections are introduced on the wire by
-/// `LS map <name>` directives, which both push a `MapLoaded`
-/// checkpoint and change the AABB scope for subsequent `LS cp` lines.
+/// AABB scope is implicit: an `Aabb` checkpoint at index `i` belongs
+/// to the section opened by the most recent `Trigger::MapLoaded` in
+/// `track.checkpoints[..i]`, falling back to
+/// `SplitsState.starting_map` when no `MapLoaded` precedes it. The
+/// box only fires while the player's world matches that scope.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Trigger {
-    Aabb { aabb: Aabb, map: Option<String> },
+    Aabb(Aabb),
     MapLoaded(String),
 }
 
@@ -177,9 +176,11 @@ impl SplitsState {
 ///   a Split / End. A Start box is always eligible (entering one re-arms
 ///   the run latch).
 /// - One-shot: each box's `fired[i]` latches true until `rearm`.
-/// - Map-scoped: an `Aabb` cp with `map: Some(name)` only fires while
-///   `world == Some(name)`; an `Aabb` with `map: None` matches against
-///   `state.starting_map`. If either side is `None` the cp is skipped.
+/// - Map-scoped: an `Aabb` cp's scope is the world named by the most
+///   recent preceding `Trigger::MapLoaded` in the checkpoint list, or
+///   `state.starting_map` if none precedes it. The box only fires
+///   while `world == Some(scope)`; if either side is `None` the cp is
+///   skipped.
 pub fn step<F: FnMut(Command)>(
     state: &mut SplitsState,
     pos: Vec3,
@@ -189,25 +190,25 @@ pub fn step<F: FnMut(Command)>(
     let Some(track) = state.track.as_ref() else {
         return;
     };
-    let starting = state.starting_map.as_deref();
 
+    let mut current_map: Option<&str> = state.starting_map.as_deref();
     let inside_now: Vec<bool> = track
         .checkpoints
         .iter()
         .map(|cp| match &cp.trigger {
-            Trigger::Aabb { aabb, map } => {
-                let target = map.as_deref().or(starting);
-                match (target, world) {
-                    (Some(t), Some(w)) if t == w => aabb.contains(pos),
-                    _ => false,
-                }
+            Trigger::Aabb(aabb) => match (current_map, world) {
+                (Some(t), Some(w)) if t == w => aabb.contains(pos),
+                _ => false,
+            },
+            Trigger::MapLoaded(name) => {
+                current_map = Some(name.as_str());
+                false
             }
-            Trigger::MapLoaded(_) => false,
         })
         .collect();
 
     for (i, cp) in track.checkpoints.iter().enumerate() {
-        if !matches!(cp.trigger, Trigger::Aabb { .. }) {
+        if !matches!(cp.trigger, Trigger::Aabb(_)) {
             continue;
         }
         let entered = inside_now[i] && !state.last_inside[i];
