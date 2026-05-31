@@ -121,6 +121,19 @@ pub fn reset_run() {
     with_state(SplitsState::rearm);
 }
 
+pub fn clear_track() {
+    let outcome = with_state(|s| {
+        let had_track = s.track.is_some();
+        s.unload();
+        had_track
+    });
+    match outcome {
+        Some(true) => chat_print("&aLiveSplit: track cleared"),
+        Some(false) => chat_print("&eLiveSplit: no track loaded"),
+        None => chat_print("&eLiveSplit: plugin not active"),
+    }
+}
+
 pub fn print_status() {
     let Some(snapshot) = with_state(|s| {
         s.track.as_ref().map(|t| {

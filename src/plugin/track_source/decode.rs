@@ -60,9 +60,27 @@ fn reset_state() {
     STATE.with(|s| *s.borrow_mut() = State::Idle);
 }
 
+/// Strip one leading `&X` color code (where X is ASCII alphanumeric —
+/// covers stock `&0`-`&f` and CPE custom codes like `&S`). The encoder's
+/// `MAX_LINE_CP` budget already anticipates a server-prepended color
+/// prefix on echo (observed on ClassiCube official servers: lines come
+/// through as `&7LS title …`); without this strip the receiver would
+/// `NotOurs` every frame the chained `mb` form produces. MCGalaxy
+/// collapses runs of color codes to a single code before broadcast, so
+/// at most one `&X` prefix ever reaches us.
+fn strip_leading_color_code(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 && bytes[0] == b'&' && bytes[1].is_ascii_alphanumeric() {
+        &s[2..]
+    } else {
+        s
+    }
+}
+
 /// Feed one chat line. Updates the thread-local state machine and
 /// returns the outcome the caller should react to.
 pub fn feed_chat_line(text: &str) -> FrameOutcome {
+    let text = strip_leading_color_code(text);
     let Some(after_prefix) = text.strip_prefix("LS ") else {
         return FrameOutcome::NotOurs;
     };
@@ -419,6 +437,7 @@ mod tests {
     #[test]
     fn colored_server_chat_is_not_ours() {
         let _g = fresh();
+        // `&e` stripped, then `hello` has no `LS ` prefix.
         assert_not_ours(feed_chat_line("&ehello"));
     }
 
@@ -426,6 +445,57 @@ mod tests {
     fn ls_without_trailing_space_is_not_ours() {
         let _g = fresh();
         assert_not_ours(feed_chat_line("LSfoo"));
+    }
+
+    #[test]
+    fn lone_ampersand_is_not_ours() {
+        let _g = fresh();
+        // `&` with no following char: nothing to strip, no `LS ` prefix.
+        assert_not_ours(feed_chat_line("&"));
+        // `&L` strips as a color code (custom CPE codes can be any ASCII
+        // alphanumeric); remaining `S title foo` lacks `LS `.
+        assert_not_ours(feed_chat_line("&LS title foo"));
+    }
+
+    #[test]
+    fn ampersand_then_non_code_is_not_ours() {
+        let _g = fresh();
+        // `&-` is not a valid color code (non-alphanumeric second char);
+        // strip leaves the text intact, no `LS ` prefix.
+        assert_not_ours(feed_chat_line("&-LS title foo"));
+    }
+
+    #[test]
+    fn colored_title_is_accepted() {
+        let _g = fresh();
+        // The observed wire form on ClassiCube official servers: a
+        // single `&7` (or whatever the server's default color) preceding
+        // the frame. MCGalaxy collapses runs of codes to one before
+        // broadcast, so we only strip one.
+        assert_buffered(feed_chat_line("&7LS title loadtest"));
+    }
+
+    #[test]
+    fn colored_round_trip_matches_uncolored() {
+        let _g = fresh();
+        // Full round-trip with a `&7` prefix on every emitted line — the
+        // exact pattern seen on real servers when /msgme echoes each
+        // chained line.
+        let track = Track {
+            name: "rt".into(),
+            checkpoints: vec![
+                cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+                cp(CheckpointKind::End, (10.0, 0.0, 0.0), (2.0, 4.0, 2.0), "e"),
+            ],
+        };
+        let lines = encode_for_chat(&track).expect("encode");
+        let last = lines.len() - 1;
+        for line in &lines[..last] {
+            assert_buffered(feed_chat_line(&format!("&7{line}")));
+        }
+        let loaded = assert_loaded(feed_chat_line(&format!("&7{}", lines[last])));
+        assert_eq!(loaded.name, track.name);
+        assert_eq!(loaded.checkpoints.len(), track.checkpoints.len());
     }
 
     // ---- ParseError ----

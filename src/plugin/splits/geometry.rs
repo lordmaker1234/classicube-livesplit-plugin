@@ -127,6 +127,16 @@ impl SplitsState {
         self.fired.fill(false);
         self.last_inside.fill(false);
     }
+
+    /// Drop the loaded track and its per-checkpoint latches. After
+    /// this, `step()` short-circuits (no `track`) until a new
+    /// `load()`.
+    pub fn unload(&mut self) {
+        self.track = None;
+        self.next_index = 0;
+        self.fired.clear();
+        self.last_inside.clear();
+    }
 }
 
 /// Pure decision function: given the current state and the player position

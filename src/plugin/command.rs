@@ -25,7 +25,7 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit start | split | splitorstart");
     chat_print("&e  /client LiveSplit pause | resume | reset");
     chat_print("&e  /client LiveSplit undosplit | skipsplit");
-    chat_print("&e  /client LiveSplit loadtest | splits");
+    chat_print("&e  /client LiveSplit loadtest | splits | clear");
     chat_print("&e  /client LiveSplit track encode");
     chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
     chat_print(
@@ -60,12 +60,6 @@ fn encode_track_or_print_error() -> Option<Vec<String>> {
         },
     }
 }
-
-/// `INPUTWIDGET_MAX_LINES * INPUTWIDGET_LEN = 3 * 64`. ClassiCube's
-/// chat input widget caps a single typed message at this many codepoints,
-/// which sets the practical upper bound on a chained `/mb` payload the
-/// operator can send in one go.
-const TYPED_INPUT_CAP: usize = 192;
 
 extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
     // The command list is permanent (no Commands_Unregister), so this
@@ -152,6 +146,7 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         }
         ["loadtest"] => splits::load_fixture(),
         ["splits"] => splits::print_status(),
+        ["clear"] => splits::clear_track(),
         ["track", "encode"] => {
             if let Some(lines) = encode_track_or_print_error() {
                 let (name, n) = splits::current_track()
@@ -159,8 +154,7 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                     .unwrap_or_default();
                 let l = lines.len();
                 chat_print(&format!(
-                    "&aLiveSplit: encoded track (\"{name}\", {n} checkpoints, {l} lines); paste \
-                     each into its own /mb sign block in order:"
+                    "&aLiveSplit: encoded track (\"{name}\", {n} checkpoints, {l} lines):"
                 ));
                 for line in &lines {
                     chat_print(line);
@@ -178,14 +172,8 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                 let chained: String = lines[1..].iter().map(|l| format!(" |/msgme {l}")).collect();
                 let payload = format!("/mb {} {first}{chained}", rest.join(" "));
                 let cp_len = payload.chars().count();
-                if cp_len > TYPED_INPUT_CAP {
-                    chat_print(&format!(
-                        "&cLiveSplit: chained /mb payload too long ({cp_len}cp); use /client \
-                         LiveSplit nas to paste manually"
-                    ));
-                } else {
-                    chat::send(payload);
-                }
+                chat_print(&format!("&eLiveSplit: sending chained /mb ({cp_len} cp)"));
+                chat::send(payload);
             }
         }
         ["nas"] => {
@@ -233,7 +221,7 @@ impl CommandModule {
                     "&a/client LiveSplit start | split | splitorstart",
                     "&a/client LiveSplit pause | resume | reset",
                     "&a/client LiveSplit undosplit | skipsplit",
-                    "&a/client LiveSplit loadtest | splits",
+                    "&a/client LiveSplit loadtest | splits | clear",
                     "&a/client LiveSplit track encode",
                     "&a/client LiveSplit mb <subcmd ...>",
                     "&a/client LiveSplit nas",
