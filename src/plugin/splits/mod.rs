@@ -71,11 +71,40 @@ impl SplitsModule {
                 let pos = entity.get_position();
                 let world = read_world_name();
                 let mut state = state.borrow_mut();
+                // When disconnected from every timer, AABB / MapLoaded
+                // triggers chat-print once and don't actually fire: we
+                // snapshot run-progress state pre-step and roll it back
+                // post-step so a `Start` / `Split` that nothing received
+                // doesn't leave the cursor advanced. Edge state
+                // (`last_inside`, `last_seen_map`) is allowed to advance
+                // either way so re-entries trigger correctly when a
+                // timer connects later. Pause/resume on map load stays
+                // silent via `livesplit::send` directly in
+                // `PauseTriggersModule` (background load-remover, not a
+                // user-visible event).
+                let connected = livesplit::any_connected();
+                let snapshot = (!connected).then(|| (state.fired.clone(), state.next_index));
+                let mut any_fired = false;
+                let mut send = |cmd: Command| {
+                    any_fired = true;
+                    if connected {
+                        livesplit::send(cmd);
+                    }
+                };
                 // Map-change detection runs before the AABB walk so a
                 // `MapLoaded` Split / End advances `next_index` first;
                 // `step` then sees the updated cursor for the same tick.
-                observe_map(&mut state, world.as_deref(), livesplit::send);
-                step(&mut state, pos, world.as_deref(), livesplit::send);
+                observe_map(&mut state, world.as_deref(), &mut send);
+                step(&mut state, pos, world.as_deref(), &mut send);
+                if any_fired && let Some((fired, next_index)) = snapshot {
+                    state.fired = fired;
+                    state.next_index = next_index;
+                    drop(state);
+                    chat_print(
+                        "&cLiveSplit: split fired but no timer connected (run /client LiveSplit \
+                         status)",
+                    );
+                }
             });
         }
         Self { state, _tick: tick }
