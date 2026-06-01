@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
+use classicube_helpers::tab_list::remove_color;
 use livesplit_core::{Run, Segment, run::saver::livesplit::save_run};
 use tracing::{debug, info};
 
@@ -114,8 +115,8 @@ fn build_lss_xml(track: &Track, server_display: &str, canonical_json: &str) -> R
     let mut run = Run::new();
     run.set_game_name("ClassiCube");
 
-    let server_pretty = path::strip_color_codes(server_display);
-    let track_pretty = path::strip_color_codes(&track.name);
+    let server_pretty = remove_color(server_display);
+    let track_pretty = remove_color(&track.name);
     run.set_category_name(format!("{server_pretty} - {track_pretty}"));
 
     for cp in &track.checkpoints {

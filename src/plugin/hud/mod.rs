@@ -12,10 +12,7 @@
 use std::cell::{Cell, RefCell};
 
 use classicube_helpers::tick::TickEventHandler;
-use classicube_sys::{
-    IVec3, PACKEDCOL_A_SHIFT, PACKEDCOL_B_SHIFT, PACKEDCOL_G_SHIFT, PACKEDCOL_R_SHIFT, PackedCol,
-    Selections_Add, Selections_Remove, Vec3,
-};
+use classicube_sys::{IVec3, PackedCol, PackedCol_Make, Selections_Add, Selections_Remove, Vec3};
 use tracing::{debug, warn};
 
 use crate::plugin::{
@@ -199,21 +196,14 @@ fn ivec3(v: Vec3) -> IVec3 {
 const BOX_ALPHA: u8 = 64;
 
 fn color_for_kind(kind: CheckpointKind) -> PackedCol {
+    // `PackedCol_Make` is the classicube-sys const-fn wrapper around the
+    // engine's `PackedCol_Make` macro -- it builds the word from the
+    // platform-correct channel shifts, so we don't hand-roll the packing.
     match kind {
-        CheckpointKind::Start => packed_col(0, 255, 0, BOX_ALPHA), // green
-        CheckpointKind::Split => packed_col(255, 255, 0, BOX_ALPHA), // yellow
-        CheckpointKind::Pause => packed_col(0, 200, 255, BOX_ALPHA), // cyan
-        CheckpointKind::Resume => packed_col(255, 140, 0, BOX_ALPHA), // orange
-        CheckpointKind::End => packed_col(255, 0, 0, BOX_ALPHA),   // red
+        CheckpointKind::Start => PackedCol_Make(0, 255, 0, BOX_ALPHA), // green
+        CheckpointKind::Split => PackedCol_Make(255, 255, 0, BOX_ALPHA), // yellow
+        CheckpointKind::Pause => PackedCol_Make(0, 200, 255, BOX_ALPHA), // cyan
+        CheckpointKind::Resume => PackedCol_Make(255, 140, 0, BOX_ALPHA), // orange
+        CheckpointKind::End => PackedCol_Make(255, 0, 0, BOX_ALPHA),   // red
     }
-}
-
-/// Pack RGBA into the engine's `PackedCol`. `PackedCol_Make` is a C
-/// macro (not a `CC_API` export), so build the word from the
-/// bindgen-emitted, platform-correct channel shifts.
-fn packed_col(r: u8, g: u8, b: u8, a: u8) -> PackedCol {
-    (u32::from(r) << PACKEDCOL_R_SHIFT)
-        | (u32::from(g) << PACKEDCOL_G_SHIFT)
-        | (u32::from(b) << PACKEDCOL_B_SHIFT)
-        | (u32::from(a) << PACKEDCOL_A_SHIFT)
 }

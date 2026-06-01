@@ -3,6 +3,8 @@ mod tests;
 
 use std::{fs, path::PathBuf};
 
+use classicube_helpers::tab_list::remove_color;
+
 /// Root directory for the on-disk track store, relative to the
 /// process working directory (which on ClassiCube is the install
 /// dir — the same place the game itself looks for
@@ -25,7 +27,7 @@ const MAX_COMPONENT_LEN: usize = 64;
 /// stays well-formed (`fs::create_dir_all` is happy, and the
 /// surrounding code doesn't have to special-case empties).
 pub fn sanitize_component(s: &str) -> String {
-    let stripped = strip_color_codes(s);
+    let stripped = remove_color(s);
 
     let mapped: String = stripped
         .chars()
@@ -52,25 +54,6 @@ pub fn sanitize_component(s: &str) -> String {
     } else {
         capped
     }
-}
-
-/// Strip ClassiCube color codes (`&X` pairs) from a string. Used by
-/// [`sanitize_component`] before charset filtering, and by the
-/// writer to clean up display strings (`<CategoryName>`) that go
-/// straight into the `.lss` without further sanitization.
-pub(super) fn strip_color_codes(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut iter = s.chars();
-    while let Some(c) = iter.next() {
-        if c == '&' {
-            // Drop the next char (whatever it is) as part of the
-            // `&X` pair. Lone trailing `&` is dropped silently.
-            let _ = iter.next();
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 fn collapse_underscores(s: &str) -> String {
