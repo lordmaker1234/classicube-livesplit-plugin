@@ -69,7 +69,7 @@ extern "C" fn message_handler(data: *mut u8) {
                         checkpoints = track.checkpoints.len(),
                         "received chat-protocol track"
                     );
-                    if splits::load_track(track) {
+                    if splits::load_track(track, "chat") {
                         LOADED_THIS_MAP.set(true);
                         return;
                     }

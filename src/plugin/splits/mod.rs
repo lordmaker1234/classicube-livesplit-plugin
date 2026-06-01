@@ -233,11 +233,13 @@ pub fn load_fixture() {
     ));
 }
 
-/// Load a track received over the chat protocol. Returns `false` only
-/// when the plugin is mid-teardown (`STATE` is `None`); the caller
-/// (track_source receiver) treats `false` as "don't suppress the
+/// Load a track from any non-fixture source. `source` is a short
+/// human-readable label appended to the success chat-print (e.g.
+/// `"chat"`, `"disk"`). Returns `false` only when the plugin is
+/// mid-teardown (`STATE` is `None`); the caller (track_source receiver
+/// / lss-storage autoload) treats `false` as "don't suppress the
 /// source chat line — plugin isn't active to handle it."
-pub fn load_track(track: Track) -> bool {
+pub fn load_track(track: Track, source: &str) -> bool {
     if let Err(e) = validate_pause_resume_pairing(&track) {
         // Mirror the chat-decoder error style. Return `false` so the
         // chat-protocol receiver doesn't suppress the source line —
@@ -248,7 +250,7 @@ pub fn load_track(track: Track) -> bool {
     let n = track.checkpoints.len();
     let name = track.name.clone();
     let starting_map = read_world_name();
-    info!(?starting_map, "loading track from chat:\n{track:#?}");
+    info!(?starting_map, source, "loading track:\n{track:#?}");
     if with_state(|s| s.load(track.clone(), starting_map.clone())).is_none() {
         return false;
     }
@@ -256,7 +258,7 @@ pub fn load_track(track: Track) -> bool {
         cb(&track, starting_map.as_deref());
     }
     chat_print(&format!(
-        "&aLiveSplit: loaded track \"{name}\" ({n} checkpoints) from chat"
+        "&aLiveSplit: loaded track \"{name}\" ({n} checkpoints) from {source}"
     ));
     true
 }

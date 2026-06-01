@@ -39,7 +39,7 @@ pub async fn try_autoload(server: String, map: String) {
                 // `false` means the plugin is mid-teardown
                 // (`SplitsState::load` returned `None` because `STATE`
                 // was cleared); nothing actionable beyond logging.
-                if !splits::load_track(track) {
+                if !splits::load_track(track, "disk") {
                     debug!("autoload: load_track returned false (plugin mid-teardown)");
                 }
             });
