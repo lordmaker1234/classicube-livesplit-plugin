@@ -271,12 +271,13 @@ pub fn current_track() -> Option<Track> {
 }
 
 /// AABB checkpoints visible on the player's current map, paired with
-/// their kind, in checkpoint order -- the boxes the HUD should draw.
-/// Resolves the live map name via `read_world_name()` and walks the
-/// loaded track's implicit scope (see `geometry::aabbs_on_map`). Empty
-/// when no track is loaded, the plugin is mid-teardown, or the current
-/// map can't be resolved.
-pub fn visible_aabbs() -> Vec<(CheckpointKind, Aabb)> {
+/// their kind and label, in checkpoint order -- the boxes the HUD
+/// should draw, and the text it floats above them. Resolves the live
+/// map name via `read_world_name()` and walks the loaded track's
+/// implicit scope (see `geometry::aabbs_on_map`). Empty when no track
+/// is loaded, the plugin is mid-teardown, or the current map can't be
+/// resolved.
+pub fn visible_aabbs() -> Vec<(CheckpointKind, Aabb, String)> {
     // Resolve the map name outside `with_state`: `read_world_name()`
     // reads the engine `World` static + tab-list, never `STATE`, so
     // keeping it out of the closure avoids nesting a borrow.

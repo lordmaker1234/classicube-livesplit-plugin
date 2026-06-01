@@ -615,22 +615,27 @@ fn unload_clears_starting_map() {
 #[test]
 fn aabbs_on_map_single_map_shows_all_on_load_map_none_off_it() {
     let track = linear_track();
+    // `linear_track`'s checkpoints all carry an empty label.
     let expected = vec![
         (
             CheckpointKind::Start,
             aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            String::new(),
         ),
         (
             CheckpointKind::Split,
             aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            String::new(),
         ),
         (
             CheckpointKind::Split,
             aabb((20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+            String::new(),
         ),
         (
             CheckpointKind::End,
             aabb((30.0, 0.0, 0.0), (32.0, 4.0, 2.0)),
+            String::new(),
         ),
     ];
     // On the load map: every AABB is in scope.
@@ -670,11 +675,13 @@ fn aabbs_on_map_multi_map_partitions_by_scope() {
         vec![
             (
                 CheckpointKind::Start,
-                aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0))
+                aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+                String::new(),
             ),
             (
                 CheckpointKind::Split,
                 aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+                String::new(),
             ),
         ],
         "only the pre-transition AABBs show on the starting map"
@@ -686,10 +693,12 @@ fn aabbs_on_map_multi_map_partitions_by_scope() {
             (
                 CheckpointKind::Split,
                 aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+                String::new(),
             ),
             (
                 CheckpointKind::End,
-                aabb((20.0, 0.0, 0.0), (22.0, 4.0, 2.0))
+                aabb((20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+                String::new(),
             ),
         ],
         "only the post-transition AABBs show on the second map"
