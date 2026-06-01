@@ -1,5 +1,6 @@
 pub mod async_manager;
 pub mod command;
+pub mod hud;
 pub mod livesplit;
 pub mod logger;
 pub mod lss_storage;
@@ -11,9 +12,10 @@ pub mod track_source;
 use std::cell::RefCell;
 
 use crate::plugin::{
-    async_manager::AsyncManagerModule, command::CommandModule, livesplit::LiveSplitModule,
-    logger::LoggerModule, lss_storage::LssStorageModule, module::Module,
-    pause_triggers::PauseTriggersModule, splits::SplitsModule, track_source::TrackSourceModule,
+    async_manager::AsyncManagerModule, command::CommandModule, hud::HudModule,
+    livesplit::LiveSplitModule, logger::LoggerModule, lss_storage::LssStorageModule,
+    module::Module, pause_triggers::PauseTriggersModule, splits::SplitsModule,
+    track_source::TrackSourceModule,
 };
 
 thread_local!(
@@ -28,6 +30,7 @@ struct MainModule {
     pause_triggers: PauseTriggersModule,
     track_source: TrackSourceModule,
     lss_storage: LssStorageModule,
+    hud: HudModule,
     command: CommandModule,
 }
 
@@ -40,6 +43,7 @@ impl MainModule {
         let pause_triggers = PauseTriggersModule::init();
         let track_source = TrackSourceModule::init();
         let lss_storage = LssStorageModule::init();
+        let hud = HudModule::init();
         let command = CommandModule::init();
 
         Self {
@@ -50,6 +54,7 @@ impl MainModule {
             pause_triggers,
             track_source,
             lss_storage,
+            hud,
             command,
         }
     }
@@ -74,6 +79,13 @@ impl Module for MainModule {
         // hook itself; its autoload is tick-driven (see module doc)
         // so it sees the *settled* map name rather than the stale one
         // available at event time on multiplayer.
+        //
+        // `hud` sits **after** `splits` (its tick reconcile reads
+        // `splits::current_track()`, so splits must still be live) and
+        // **before** `command` (the `show …` chat arms call into hud
+        // accessors). Reverse-dispatch then tears `hud` down before
+        // `splits`, clearing the in-world selection boxes while the
+        // track snapshot it mirrors is still available.
         vec![
             &mut self.logger,
             &mut self.async_manager,
@@ -82,6 +94,7 @@ impl Module for MainModule {
             &mut self.pause_triggers,
             &mut self.track_source,
             &mut self.lss_storage,
+            &mut self.hud,
             &mut self.command,
         ]
     }

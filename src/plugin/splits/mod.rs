@@ -21,7 +21,8 @@ use crate::{
         module::Module,
         pause_triggers,
         splits::geometry::{
-            CheckpointKind, SplitsState, Track, observe_map, step, validate_pause_resume_pairing,
+            Aabb, CheckpointKind, SplitsState, Track, observe_map, step,
+            validate_pause_resume_pairing,
         },
     },
 };
@@ -267,6 +268,25 @@ pub fn load_track(track: Track, source: &str) -> bool {
 /// command. `None` if no track is loaded or the plugin is mid-teardown.
 pub fn current_track() -> Option<Track> {
     with_state(|s| s.track.clone()).flatten()
+}
+
+/// AABB checkpoints visible on the player's current map, paired with
+/// their kind, in checkpoint order -- the boxes the HUD should draw.
+/// Resolves the live map name via `read_world_name()` and walks the
+/// loaded track's implicit scope (see `geometry::aabbs_on_map`). Empty
+/// when no track is loaded, the plugin is mid-teardown, or the current
+/// map can't be resolved.
+pub fn visible_aabbs() -> Vec<(CheckpointKind, Aabb)> {
+    // Resolve the map name outside `with_state`: `read_world_name()`
+    // reads the engine `World` static + tab-list, never `STATE`, so
+    // keeping it out of the closure avoids nesting a borrow.
+    let world = read_world_name();
+    with_state(|s| {
+        s.track.as_ref().map_or_else(Vec::new, |t| {
+            geometry::aabbs_on_map(t, s.starting_map.as_deref(), world.as_deref())
+        })
+    })
+    .unwrap_or_default()
 }
 
 /// Cheap "is a track loaded?" probe for callers that just want to gate

@@ -610,6 +610,95 @@ fn unload_clears_starting_map() {
     assert!(state.track.is_none());
 }
 
+// ---- aabbs_on_map (HUD map-scope filter) ----
+
+#[test]
+fn aabbs_on_map_single_map_shows_all_on_load_map_none_off_it() {
+    let track = linear_track();
+    let expected = vec![
+        (
+            CheckpointKind::Start,
+            aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+        ),
+        (
+            CheckpointKind::Split,
+            aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+        ),
+        (
+            CheckpointKind::Split,
+            aabb((20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+        ),
+        (
+            CheckpointKind::End,
+            aabb((30.0, 0.0, 0.0), (32.0, 4.0, 2.0)),
+        ),
+    ];
+    // On the load map: every AABB is in scope.
+    assert_eq!(
+        aabbs_on_map(&track, Some("home"), Some("home")),
+        expected,
+        "all AABBs visible on the starting map"
+    );
+    // On a different map: a single-map track's AABBs are scoped to the
+    // starting map, so none show.
+    assert!(aabbs_on_map(&track, Some("home"), Some("away")).is_empty());
+    // World unknown: nothing to anchor scope against.
+    assert!(aabbs_on_map(&track, Some("home"), None).is_empty());
+    // Starting map unknown and no preceding MapLoaded: nothing in scope.
+    assert!(aabbs_on_map(&track, None, Some("home")).is_empty());
+}
+
+#[test]
+fn aabbs_on_map_multi_map_partitions_by_scope() {
+    // [Start, Split] on the starting map, then MapLoaded("mapname"),
+    // then [Split, End] scoped to "mapname". Identical coords across
+    // sections to prove the walk discriminates by derived scope, not
+    // geometry.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            cp_map(CheckpointKind::Split, "mapname"),
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+        ],
+    };
+
+    assert_eq!(
+        aabbs_on_map(&track, Some("starting"), Some("starting")),
+        vec![
+            (
+                CheckpointKind::Start,
+                aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0))
+            ),
+            (
+                CheckpointKind::Split,
+                aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            ),
+        ],
+        "only the pre-transition AABBs show on the starting map"
+    );
+
+    assert_eq!(
+        aabbs_on_map(&track, Some("starting"), Some("mapname")),
+        vec![
+            (
+                CheckpointKind::Split,
+                aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
+            ),
+            (
+                CheckpointKind::End,
+                aabb((20.0, 0.0, 0.0), (22.0, 4.0, 2.0))
+            ),
+        ],
+        "only the post-transition AABBs show on the second map"
+    );
+
+    // A map that's in neither section: nothing in scope.
+    assert!(aabbs_on_map(&track, Some("starting"), Some("elsewhere")).is_empty());
+}
+
 // ---- observe_map (tick-driven map-change detection) ----
 
 #[test]

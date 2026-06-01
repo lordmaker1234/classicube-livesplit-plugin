@@ -7,7 +7,7 @@ use tracing::debug;
 use crate::{
     chat_print,
     plugin::{
-        is_plugin_active,
+        hud, is_plugin_active,
         livesplit::{self, Command as LsCommand, protocol::TimingMethod},
         module::Module,
         pause_triggers, splits,
@@ -44,6 +44,7 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit pause | resume | reset");
     chat_print("&e  /client LiveSplit undosplit | skipsplit");
     chat_print("&e  /client LiveSplit loadtest | splits | clear");
+    chat_print("&e  /client LiveSplit show [on|off]    (toggle checkpoint HUD)");
     chat_print("&e  /client LiveSplit track encode");
     chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
     chat_print(
@@ -186,6 +187,22 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         ["loadtest"] => splits::load_fixture(),
         ["splits"] => splits::print_status(),
         ["clear"] => splits::clear_track(),
+        ["show"] => {
+            let on = hud::toggle_show();
+            chat_print(if on {
+                "&aLiveSplit: checkpoint HUD on"
+            } else {
+                "&aLiveSplit: checkpoint HUD off"
+            });
+        }
+        ["show", "on"] => {
+            hud::set_show(true);
+            chat_print("&aLiveSplit: checkpoint HUD on");
+        }
+        ["show", "off"] => {
+            hud::set_show(false);
+            chat_print("&aLiveSplit: checkpoint HUD off");
+        }
         ["track", "encode"] => {
             if let Some(lines) = encode_track_or_print_error() {
                 let (name, n) = splits::current_track()
@@ -283,6 +300,7 @@ impl CommandModule {
                     "&a/client LiveSplit pause | resume | reset",
                     "&a/client LiveSplit undosplit | skipsplit",
                     "&a/client LiveSplit loadtest | splits | clear",
+                    "&a/client LiveSplit show [on|off]",
                     "&a/client LiveSplit track encode",
                     "&a/client LiveSplit mb <subcmd ...>",
                     "&a/client LiveSplit nas",

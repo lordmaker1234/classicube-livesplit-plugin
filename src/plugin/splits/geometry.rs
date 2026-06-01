@@ -342,6 +342,36 @@ pub fn step<F: FnMut(Command), P: FnMut(), R: FnMut()>(
     state.last_inside = inside_now;
 }
 
+/// AABB checkpoints whose derived map scope matches `world`, paired
+/// with their kind, in checkpoint order. Mirrors the scope walk in
+/// [`step`]: a running `current_map` seeded from `starting_map`,
+/// advanced by each `Trigger::MapLoaded`; an `Aabb` is in scope only
+/// while `current_map == Some(world)`. Used by the in-world HUD to draw
+/// just the boxes relevant to the player's current map. Empty when
+/// `world` is `None`, or when no in-scope concrete map matches it.
+#[must_use]
+pub fn aabbs_on_map(
+    track: &Track,
+    starting_map: Option<&str>,
+    world: Option<&str>,
+) -> Vec<(CheckpointKind, Aabb)> {
+    let mut current_map = starting_map;
+    let mut out = Vec::new();
+    for cp in &track.checkpoints {
+        match &cp.trigger {
+            Trigger::Aabb(aabb) => {
+                if let (Some(t), Some(w)) = (current_map, world)
+                    && t == w
+                {
+                    out.push((cp.kind, *aabb));
+                }
+            }
+            Trigger::MapLoaded(name) => current_map = Some(name.as_str()),
+        }
+    }
+    out
+}
+
 /// Edge-trigger wrapper over [`step_on_map_loaded`] for tick-driven
 /// map-change detection. Compares the freshly-observed map name
 /// against `state.last_seen_map`; on a transition to a different
