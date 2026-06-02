@@ -33,8 +33,14 @@ fn sample_track() -> Track {
     }
 }
 
-fn labels_of(t: &Track) -> Vec<String> {
-    t.checkpoints.iter().map(|c| c.label.clone()).collect()
+/// Segment labels written to the `.lss`: every checkpoint except the
+/// implicit Start at index 0 (which has no `<Segment>`).
+fn segment_labels_of(t: &Track) -> Vec<String> {
+    t.checkpoints
+        .iter()
+        .skip(1)
+        .map(|c| c.label.clone())
+        .collect()
 }
 
 #[test]
@@ -46,12 +52,25 @@ fn canonical_is_byte_stable() {
 }
 
 #[test]
-fn round_trip_track_payload_track() {
-    let t = sample_track();
+fn round_trip_preserves_non_start_and_defaults_start_label() {
+    let t = sample_track(); // Start label is "start".
     let bytes = serialize_canonical(&t).unwrap();
     let payload = parse(&bytes).unwrap();
-    let back = into_track(payload, labels_of(&t)).unwrap();
-    assert_eq!(t, back);
+    let back = into_track(payload, segment_labels_of(&t)).unwrap();
+
+    // Geometry, kinds, and non-start labels round-trip exactly.
+    assert_eq!(back.name, t.name);
+    assert_eq!(back.checkpoints.len(), t.checkpoints.len());
+    for i in 1..t.checkpoints.len() {
+        assert_eq!(back.checkpoints[i], t.checkpoints[i]);
+    }
+
+    // The Start has no segment, so its label isn't persisted: it comes
+    // back as the default, but its kind and trigger survive.
+    let start = &back.checkpoints[0];
+    assert_eq!(start.kind, CheckpointKind::Start);
+    assert_eq!(start.trigger, t.checkpoints[0].trigger);
+    assert_eq!(start.label, "Start");
 }
 
 #[test]
@@ -167,18 +186,33 @@ fn rejects_bad_kind_sequence_on_serialize() {
 
 #[test]
 fn into_track_substitutes_placeholder_for_empty_label() {
+    // sample_track is [Start, Split(lobby), End]; segments are the two
+    // non-start checkpoints. An empty first segment is the Split at
+    // checkpoint index 1, so the placeholder is "split 1".
     let t = sample_track();
     let bytes = serialize_canonical(&t).unwrap();
     let payload = parse(&bytes).unwrap();
-    let labels = vec![String::new(), "lobby".into(), "end".into()];
+    let labels = vec![String::new(), "end".into()];
     let back = into_track(payload, labels).unwrap();
-    assert_eq!(back.checkpoints[0].label, "split 0");
+    assert_eq!(back.checkpoints[1].label, "split 1");
+    // The Start always gets the default, regardless of segments.
+    assert_eq!(back.checkpoints[0].label, "Start");
 }
 
 #[test]
 fn into_track_rejects_label_count_mismatch() {
-    let t = sample_track();
+    let t = sample_track(); // 3 checkpoints -> expects 2 segment labels.
     let bytes = serialize_canonical(&t).unwrap();
     let payload = parse(&bytes).unwrap();
+    // Too few.
     assert!(into_track(payload, vec!["only".into()]).is_err());
+    // Too many: a label per checkpoint (the pre-change format) is now a
+    // mismatch, since the Start no longer has a segment.
+    assert!(
+        into_track(
+            parse(&bytes).unwrap(),
+            vec!["start".into(), "lobby".into(), "end".into()]
+        )
+        .is_err()
+    );
 }

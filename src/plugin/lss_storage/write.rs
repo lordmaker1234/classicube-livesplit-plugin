@@ -119,7 +119,13 @@ fn build_lss_xml(track: &Track, server_display: &str, canonical_json: &str) -> R
     let track_pretty = remove_color(&track.name);
     run.set_category_name(format!("{server_pretty} - {track_pretty}"));
 
-    for cp in &track.checkpoints {
+    // LiveSplit's segment list is everything after the implicit Start:
+    // pressing Start is the timer-side run-start action, not a named
+    // split (you run *into* the first split). So the Start checkpoint at
+    // index 0 doesn't get a `<Segment>`; the rest do, in order. The
+    // reader mirrors this -- it expects one label per non-Start
+    // checkpoint and defaults the Start's label.
+    for cp in track.checkpoints.iter().skip(1) {
         run.push_segment(Segment::new(cp.label.as_str()));
     }
 

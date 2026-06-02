@@ -56,12 +56,41 @@ fn build_lss_xml_roundtrips_canonical_payload() {
         .expect("ClassiCubeTrack present");
     assert_eq!(stored.as_bytes(), canonical.as_slice());
 
+    // The Start checkpoint is the timer-side run-start action, not a
+    // named split, so it's omitted from the segment list -- only "end"
+    // remains.
     let names: Vec<&str> = run.segments().iter().map(|s| s.name()).collect();
-    assert_eq!(names, vec!["start", "end"]);
+    assert_eq!(names, vec!["end"]);
 
     assert_eq!(run.game_name(), "ClassiCube");
     assert!(run.category_name().contains("MyServer"));
     assert!(run.category_name().contains("any%"));
+}
+
+#[test]
+fn build_lss_xml_round_trips_through_into_track() {
+    let t = sample_track(); // [Start "start", End "end"]
+    let canonical = payload::serialize_canonical(&t).unwrap();
+    let canonical_str = std::str::from_utf8(&canonical).unwrap();
+
+    let xml = build_lss_xml(&t, "Srv", canonical_str).unwrap();
+    let run = parse(&xml).expect("re-parse");
+
+    let stored = run
+        .metadata()
+        .custom_variable_value(CUSTOM_VAR_NAME)
+        .expect("ClassiCubeTrack present");
+    let payload = payload::parse(stored.as_bytes()).unwrap();
+    let labels: Vec<String> = run.segments().iter().map(|s| s.name().to_owned()).collect();
+    let back = payload::into_track(payload, labels).unwrap();
+
+    assert_eq!(back.checkpoints.len(), 2);
+    // Start: kind + geometry survive; label defaults (no segment).
+    assert_eq!(back.checkpoints[0].kind, CheckpointKind::Start);
+    assert_eq!(back.checkpoints[0].trigger, t.checkpoints[0].trigger);
+    assert_eq!(back.checkpoints[0].label, "Start");
+    // End: its segment carries the label through.
+    assert_eq!(back.checkpoints[1], t.checkpoints[1]);
 }
 
 #[test]

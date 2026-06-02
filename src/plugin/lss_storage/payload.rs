@@ -166,10 +166,18 @@ pub fn parse(bytes: &[u8]) -> Result<Payload> {
     Ok(payload)
 }
 
-/// Build a runtime `Track` from a parsed payload + a list of
-/// per-checkpoint labels (read from the `.lss`'s `<Segments>` list
-/// in order). Empty labels get a generated `"split <i>"` placeholder
-/// so the runtime invariant "label is non-empty" holds.
+/// Default label for the Start checkpoint, which has no `<Segment>` of
+/// its own (see [`into_track`]). Matches the conventional Start label
+/// used elsewhere (fixture, status display).
+const START_LABEL: &str = "Start";
+
+/// Build a runtime `Track` from a parsed payload + the `.lss`'s
+/// `<Segments>` names, in order. Segments cover every checkpoint
+/// *except* the implicit Start at index 0 -- pressing Start is the
+/// run-start action, not a named split -- so the reader expects one
+/// label per non-Start checkpoint and gives the Start a default
+/// [`START_LABEL`]. Empty segment names get a generated `"split <i>"`
+/// placeholder so the runtime invariant "label is non-empty" holds.
 pub fn into_track(payload: Payload, labels: Vec<String>) -> Result<Track> {
     let n = payload.checkpoints.len();
     ensure!(
@@ -177,13 +185,15 @@ pub fn into_track(payload: Payload, labels: Vec<String>) -> Result<Track> {
         "payload has {n} checkpoint(s); need at least 2 (Start + End)"
     );
     ensure!(
-        labels.len() == n,
-        "label count {} doesn't match checkpoint count {n}",
-        labels.len()
+        labels.len() + 1 == n,
+        "label count {} doesn't match split count {} (checkpoints after the Start)",
+        labels.len(),
+        n - 1
     );
 
+    let mut labels = labels.into_iter();
     let mut checkpoints = Vec::with_capacity(n);
-    for (i, (pcp, label)) in payload.checkpoints.into_iter().zip(labels).enumerate() {
+    for (i, pcp) in payload.checkpoints.into_iter().enumerate() {
         let parsed_kind = kind_from_payload(&pcp.kind);
         if !kind_valid_at(i, n, parsed_kind) {
             bail!(
@@ -206,10 +216,15 @@ pub fn into_track(payload: Payload, labels: Vec<String>) -> Result<Track> {
                  kinds are AABB-only"
             );
         }
-        let label = if label.trim().is_empty() {
-            format!("split {i}")
+        let label = if i == 0 {
+            // The Start has no segment; give it a stable default.
+            START_LABEL.to_owned()
         } else {
-            label
+            // `next()` is guaranteed Some by the count check above.
+            match labels.next() {
+                Some(s) if !s.trim().is_empty() => s,
+                _ => format!("split {i}"),
+            }
         };
         checkpoints.push(Checkpoint {
             kind: parsed_kind,
