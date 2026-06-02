@@ -207,7 +207,7 @@ pub(crate) fn kind_name(kind: CheckpointKind) -> &'static str {
 /// `next_index` come straight off [`SplitsState`]. Each row's marker is `>`
 /// for the next eligible checkpoint (`next_index`), `x` for an
 /// already-fired one, or blank for pending, color-coded to match. The kind
-/// column shows the kind name for an `Aabb` trigger or `(map)` for a
+/// column shows the kind name for an `Aabb` trigger or `Map` for a
 /// `MapLoaded` map-transition; the quoted text is always the checkpoint's
 /// label.
 #[must_use]
@@ -231,7 +231,7 @@ pub(crate) fn format_splits(track: &Track, fired: &[bool], next_index: usize) ->
         };
         let kind_col = match cp.trigger {
             Trigger::Aabb(_) => kind_name(cp.kind),
-            Trigger::MapLoaded(_) => "(map)",
+            Trigger::MapLoaded(_) => "Map",
         };
         let label = &cp.label;
         lines.push(format!("{color} {marker} #{i} {kind_col:<6} \"{label}\""));

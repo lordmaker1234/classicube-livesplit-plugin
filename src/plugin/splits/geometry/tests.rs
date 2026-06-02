@@ -1561,7 +1561,7 @@ fn format_splits_lists_each_checkpoint_with_markers() {
                 trigger: Trigger::Aabb(aabb((10.0, 0.0, 0.0), (11.0, 1.0, 1.0))),
                 label: "midpoint".into(),
             },
-            // A `MapLoaded` trigger renders `(map)` in the kind column.
+            // A `MapLoaded` trigger renders `Map` in the kind column.
             Checkpoint {
                 kind: CheckpointKind::Split,
                 trigger: Trigger::MapLoaded("tower2".into()),
@@ -1583,7 +1583,7 @@ fn format_splits_lists_each_checkpoint_with_markers() {
             "&aLiveSplit: track \"doubletower\" (4 checkpoints, 1 fired)".to_string(),
             "&8 x #0 Start  \"spawn\"".to_string(),
             "&e > #1 Split  \"midpoint\"".to_string(),
-            "&f   #2 (map)  \"tower2\"".to_string(),
+            "&f   #2 Map    \"tower2\"".to_string(),
             "&f   #3 End    \"finish\"".to_string(),
         ]
     );
