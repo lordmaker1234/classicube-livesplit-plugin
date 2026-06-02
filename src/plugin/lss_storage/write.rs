@@ -122,10 +122,10 @@ fn same_as_latest(path: &Path, canonical: &[u8]) -> Result<bool> {
         .metadata()
         .custom_variable_value(CUSTOM_VAR_NAME)
         .unwrap_or("");
-    // The dedup key is the canonical JSON bytes, not the base64 transport
-    // form. Decode the stored value back; a decode failure (corrupt /
-    // legacy raw-JSON value) falls through to "write a new version", the
-    // same graceful behavior as a parse failure above.
+    // The dedup key is the canonical postcard bytes, not the base64
+    // transport form. Decode the stored value back; a decode failure
+    // (corrupt / legacy non-base64 value) falls through to "write a new
+    // version", the same graceful behavior as a parse failure above.
     match payload::decode_var(stored) {
         Ok(decoded) => Ok(decoded == canonical),
         Err(e) => {
@@ -154,8 +154,9 @@ fn build_lss_xml(track: &Track, server_display: &str, encoded: &str) -> Result<S
     }
 
     // `encoded` is the base64 transport form of the canonical payload
-    // bytes. Storing base64 (not raw JSON) keeps the text node free of any
-    // whitespace an external XML formatter could reflow into the value.
+    // bytes. The payload is binary postcard, which can't live in an XML text
+    // node directly; base64 also keeps the value free of any whitespace an
+    // external XML formatter could reflow.
     run.metadata_mut()
         .custom_variable_mut(CUSTOM_VAR_NAME)
         .permanent()

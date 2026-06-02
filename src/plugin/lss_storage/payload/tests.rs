@@ -160,8 +160,15 @@ fn track_name_change_yields_different_bytes() {
 
 #[test]
 fn rejects_unknown_schema_version() {
-    let v2 = br#"{"v":2,"name":"x","checkpoints":[]}"#;
-    assert!(parse(v2).is_err());
+    // A well-formed postcard payload whose version field doesn't match the
+    // one this build understands must be rejected, not misread.
+    let bad = Payload {
+        v: SCHEMA_VERSION + 1,
+        name: "x".to_owned(),
+        checkpoints: vec![],
+    };
+    let bytes = postcard::to_allocvec(&bad).unwrap();
+    assert!(parse(&bytes).is_err());
 }
 
 #[test]

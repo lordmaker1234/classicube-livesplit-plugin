@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, anyhow, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
@@ -16,14 +16,14 @@ const SCHEMA_VERSION: u32 = 1;
 /// writer (build + dedup compare).
 pub const CUSTOM_VAR_NAME: &str = "ClassiCubeTrack";
 
-/// Canonical JSON form of a `Track`, stored as the
-/// `ClassiCubeTrack` custom variable inside the `.lss` file.
+/// Canonical postcard form of a `Track`, stored (base64-wrapped) as
+/// the `ClassiCubeTrack` custom variable inside the `.lss` file.
 /// Schema-versioned so future plugin builds detect unknown payloads
 /// instead of misparsing.
 ///
-/// Field declaration order is canonical: serde preserves it in
-/// JSON output, and we serialize compactly (no pretty-printing) so
-/// byte-equality is the comparison key for the writer's dedup gate.
+/// postcard is a compact, deterministic binary format: field
+/// declaration order is the serialization order, so byte-equality is
+/// the comparison key for the writer's dedup gate.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Payload {
     pub v: u32,
@@ -38,7 +38,6 @@ pub struct PayloadCheckpoint {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum PayloadKind {
     Start,
     Split,
@@ -47,26 +46,26 @@ pub enum PayloadKind {
     End,
 }
 
-/// Wire form of a `Trigger`. Externally-tagged enum so the JSON
-/// reads as `{"aabb": {...}}` or `{"map": "<name>"}`. AABBs use the
-/// same quantized `[u16; 3]` min + `[u8; 3]` size encoding as the
-/// chat protocol, so a track encoded for chat and one persisted to
-/// disk round-trip identically.
+/// Wire form of a `Trigger`. postcard encodes the enum as a varint
+/// variant index plus the variant's data. AABBs use the same
+/// quantized `[u16; 3]` min + `[u8; 3]` size encoding as the chat
+/// protocol, so a track encoded for chat and one persisted to disk
+/// describe identical geometry.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
 pub enum PayloadTrigger {
     Aabb { min: [u16; 3], size: [u8; 3] },
     Map(String),
 }
 
-/// Convert a runtime `Track` to its canonical compact-JSON byte
+/// Convert a runtime `Track` to its canonical postcard byte
 /// representation. Errors if any AABB extent exceeds 255 blocks or
 /// the position-implicit `CheckpointKind` sequence is violated
 /// (index 0 must be `Start`, last must be `End`, middle must be
 /// `Split` / `Pause` / `Resume`).
 pub fn serialize_canonical(track: &Track) -> Result<Vec<u8>> {
     let payload = track_to_payload(track)?;
-    let bytes = serde_json::to_vec(&payload)?;
+    let bytes =
+        postcard::to_allocvec(&payload).map_err(|e| anyhow!("postcard-encoding payload: {e}"))?;
     Ok(bytes)
 }
 
@@ -156,7 +155,8 @@ fn kind_from_payload(k: &PayloadKind) -> CheckpointKind {
 /// older plugin builds notice future format bumps instead of
 /// silently misreading them.
 pub fn parse(bytes: &[u8]) -> Result<Payload> {
-    let payload: Payload = serde_json::from_slice(bytes)?;
+    let payload: Payload =
+        postcard::from_bytes(bytes).map_err(|e| anyhow!("postcard-decoding payload: {e}"))?;
     if payload.v != SCHEMA_VERSION {
         bail!(
             "unknown payload schema version {} (expected {})",
@@ -168,11 +168,11 @@ pub fn parse(bytes: &[u8]) -> Result<Payload> {
 }
 
 /// Encode the canonical payload bytes into the ASCII string stored in the
-/// `<Variable name="ClassiCubeTrack">` text node. Base64 has no whitespace,
-/// so an XML pretty-printer has nothing to reflow -- the payload can never
-/// be corrupted the way a raw-JSON text node can (a formatter word-wrapping
-/// the long line at a space inside the track name injects a newline that's
-/// illegal inside a JSON string).
+/// `<Variable name="ClassiCubeTrack">` text node. The canonical bytes are
+/// postcard (arbitrary binary -- control chars, non-UTF-8), which can't live
+/// in an XML text node at all, so base64 is mandatory. As a bonus, base64 has
+/// no whitespace for an XML pretty-printer to reflow, so the value can't be
+/// corrupted by a formatter wrapping the line.
 pub fn encode_var(canonical: &[u8]) -> String {
     STANDARD.encode(canonical)
 }
