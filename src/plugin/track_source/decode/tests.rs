@@ -892,3 +892,120 @@ fn pause_as_last_checkpoint_errors() {
     let m = assert_parse_error(feed_chat_line("LS end"));
     assert!(m.contains("must be a plain checkpoint"), "{m}");
 }
+
+// ---- decode_geometry (batch, geometry-only disk decoder) ----
+//
+// `decode_geometry` is pure (no thread-local state), so these tests
+// don't need the `fresh()` STATE guard.
+
+#[test]
+fn decode_geometry_parses_bare_lines() {
+    let text = "LS title Load Test\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS map mapname\nLS cp \
+                20,0,0 2,4,2\nLS end";
+    let track = decode_geometry(text).unwrap();
+    assert_eq!(track.name, "Load Test");
+    let kinds: Vec<_> = track.checkpoints.iter().map(|c| c.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            CheckpointKind::Start,
+            CheckpointKind::Split,
+            CheckpointKind::Split,
+            CheckpointKind::End,
+        ]
+    );
+    // Geometry-only: every checkpoint comes back with an empty label.
+    assert!(track.checkpoints.iter().all(|c| c.label.is_empty()));
+    // cp -> Aabb, map -> MapLoaded.
+    assert!(matches!(track.checkpoints[0].trigger, Trigger::Aabb(_)));
+    assert_eq!(
+        track.checkpoints[2].trigger,
+        Trigger::MapLoaded("mapname".into())
+    );
+}
+
+#[test]
+fn decode_geometry_handles_pause_unpause() {
+    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS pause 10,0,0 2,4,2\nLS unpause 20,0,0 2,4,2\nLS \
+                cp 30,0,0 2,4,2\nLS end";
+    let track = decode_geometry(text).unwrap();
+    let kinds: Vec<_> = track.checkpoints.iter().map(|c| c.kind).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            CheckpointKind::Start,
+            CheckpointKind::Pause,
+            CheckpointKind::Resume,
+            CheckpointKind::End,
+        ]
+    );
+}
+
+#[test]
+fn decode_geometry_rejects_non_ls_line() {
+    let text = "LS title T\nnot an ls line\nLS cp 0,0,0 2,4,2\nLS end";
+    assert!(decode_geometry(text).is_err());
+}
+
+#[test]
+fn decode_geometry_rejects_missing_end() {
+    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2";
+    let err = decode_geometry(text).unwrap_err().to_string();
+    assert!(err.contains("missing `LS end`"), "{err}");
+}
+
+#[test]
+fn decode_geometry_rejects_missing_title() {
+    let text = "LS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    assert!(decode_geometry(text).is_err());
+}
+
+#[test]
+fn decode_geometry_rejects_too_few_checkpoints() {
+    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS end";
+    let err = decode_geometry(text).unwrap_err().to_string();
+    assert!(err.contains("at least 2 checkpoints"), "{err}");
+}
+
+#[test]
+fn decode_geometry_rejects_pause_as_last() {
+    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS pause 10,0,0 2,4,2\nLS end";
+    let err = decode_geometry(text).unwrap_err().to_string();
+    assert!(err.contains("must be a plain checkpoint"), "{err}");
+}
+
+#[test]
+fn decode_geometry_rejects_pause_first() {
+    let text = "LS title T\nLS pause 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    let err = decode_geometry(text).unwrap_err().to_string();
+    assert!(err.contains("first checkpoint must be"), "{err}");
+}
+
+#[test]
+fn decode_geometry_rejects_standalone_label() {
+    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS label oops\nLS cp 10,0,0 2,4,2\nLS end";
+    let err = decode_geometry(text).unwrap_err().to_string();
+    assert!(err.contains("LS label"), "{err}");
+}
+
+#[test]
+fn decode_geometry_ignores_inline_label() {
+    // A hand-edited inline label on a checkpoint line is dropped; the
+    // checkpoint still decodes with an empty label.
+    let text = "LS title T\nLS cp 0,0,0 2,4,2 strayLabel\nLS cp 10,0,0 2,4,2 another\nLS end";
+    let track = decode_geometry(text).unwrap();
+    assert_eq!(track.checkpoints.len(), 2);
+    assert!(track.checkpoints.iter().all(|c| c.label.is_empty()));
+}
+
+#[test]
+fn decode_geometry_tolerates_indentation_and_crlf() {
+    // Leading indentation (formatter), CRLF endings, and a blank line
+    // all survive: the decoder trims and skips them.
+    let text = "    LS title T\r\n\tLS cp 0,0,0 2,4,2\r\n  LS cp 10,0,0 2,4,2\r\n\r\nLS end";
+    let track = decode_geometry(text).unwrap();
+    assert_eq!(track.name, "T");
+    assert_eq!(track.checkpoints.len(), 2);
+    assert_eq!(track.checkpoints[0].kind, CheckpointKind::Start);
+    assert_eq!(track.checkpoints[1].kind, CheckpointKind::End);
+}

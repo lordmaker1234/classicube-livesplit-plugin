@@ -677,3 +677,152 @@ fn rejects_resume_before_pause_unbalanced() {
         "unexpected error message: {err}"
     );
 }
+
+// ---- encode_for_disk (geometry-only, label-free) ----
+
+#[test]
+fn disk_encode_omits_all_labels() {
+    // The same track the chat encoder renders with inline labels. The
+    // disk encoder emits bare keyword lines: same keywords + coords /
+    // map name, with no inline labels and no `LS label` follow-up lines.
+    let track = Track {
+        name: "Load Test".into(),
+        checkpoints: vec![
+            cp(
+                CheckpointKind::Start,
+                (0.0, 0.0, 0.0),
+                (2.0, 4.0, 2.0),
+                "Start CheckPoint",
+            ),
+            cp(
+                CheckpointKind::Split,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "Split A",
+            ),
+            cp(
+                CheckpointKind::Split,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                "Split B",
+            ),
+            cp_map(CheckpointKind::Split, "mapname", "Map Name"),
+            cp(
+                CheckpointKind::Split,
+                (0.0, 0.0, 0.0),
+                (2.0, 4.0, 2.0),
+                "Split C",
+            ),
+            cp(
+                CheckpointKind::Split,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "Split D",
+            ),
+            cp(
+                CheckpointKind::End,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                "Split E",
+            ),
+        ],
+    };
+    let lines = encode_for_disk(&track).unwrap();
+    assert_eq!(
+        lines,
+        vec![
+            "LS title Load Test",
+            "LS cp 0,0,0 2,4,2",
+            "LS cp 10,0,0 2,4,2",
+            "LS cp 20,0,0 2,4,2",
+            "LS map mapname",
+            "LS cp 0,0,0 2,4,2",
+            "LS cp 10,0,0 2,4,2",
+            "LS cp 20,0,0 2,4,2",
+            "LS end",
+        ]
+    );
+    assert!(lines.iter().all(|l| !l.starts_with("LS label")));
+}
+
+#[test]
+fn disk_encode_emits_bare_pause_unpause() {
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp(
+                CheckpointKind::Pause,
+                (10.0, 0.0, 0.0),
+                (12.0, 4.0, 2.0),
+                "p",
+            ),
+            cp(
+                CheckpointKind::Resume,
+                (20.0, 0.0, 0.0),
+                (22.0, 4.0, 2.0),
+                "u",
+            ),
+            cp(CheckpointKind::End, (30.0, 0.0, 0.0), (32.0, 4.0, 2.0), "e"),
+        ],
+    };
+    let lines = encode_for_disk(&track).unwrap();
+    assert_eq!(
+        lines,
+        vec![
+            "LS title T",
+            "LS cp 0,0,0 2,4,2",
+            "LS pause 10,0,0 2,4,2",
+            "LS unpause 20,0,0 2,4,2",
+            "LS cp 30,0,0 2,4,2",
+            "LS end",
+        ]
+    );
+}
+
+#[test]
+fn disk_encode_ignores_label_length_unlike_chat() {
+    // A label too long for even a standalone chat `LS label` line makes
+    // the chat encoder fail; the disk encoder drops labels entirely, so
+    // the same track serializes fine.
+    let label = "x".repeat(200);
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(
+                CheckpointKind::Start,
+                (0.0, 0.0, 0.0),
+                (2.0, 4.0, 2.0),
+                &label,
+            ),
+            cp(CheckpointKind::End, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0), "e"),
+        ],
+    };
+    assert!(encode_for_chat(&track).is_err());
+    let lines = encode_for_disk(&track).unwrap();
+    assert_eq!(
+        lines,
+        vec![
+            "LS title T",
+            "LS cp 0,0,0 2,4,2",
+            "LS cp 10,0,0 2,4,2",
+            "LS end",
+        ]
+    );
+}
+
+#[test]
+fn disk_encode_allows_empty_labels() {
+    // The non-empty-label invariant is chat-only; disk geometry ignores
+    // label content, so empty labels (which the chat encoder rejects)
+    // serialize fine.
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), ""),
+            cp(CheckpointKind::End, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0), ""),
+        ],
+    };
+    assert!(encode_for_chat(&track).is_err());
+    assert!(encode_for_disk(&track).is_ok());
+}

@@ -43,6 +43,28 @@ pub(crate) const MAX_LINE_CP: usize = 64 - 3;
 ///                `End` on this line (Pause/Resume can't be the last
 ///                checkpoint; the encoder enforces this above).
 pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
+    encode_lines(track, true)
+}
+
+/// Encode a `Track`'s geometry into bare `LS …` lines for on-disk
+/// storage (the `.lss` `ClassiCubeTrack` custom variable). Identical to
+/// [`encode_for_chat`] except it never emits labels: every checkpoint
+/// line is bare (`LS cp <min> <size>` / `LS map <name>` / `LS pause …` /
+/// `LS unpause …`) with no inline labels and no `LS label` follow-up
+/// lines. Labels live in the `.lss` `<Segment>` elements instead, so a
+/// label-only edit yields identical disk text (the writer's dedup gate
+/// then skips it). The non-empty-label invariant is also skipped --
+/// label content is irrelevant to disk geometry.
+pub fn encode_for_disk(track: &Track) -> Result<Vec<String>> {
+    encode_lines(track, false)
+}
+
+/// Shared body of [`encode_for_chat`] / [`encode_for_disk`]. When
+/// `emit_labels` is true, each checkpoint's label rides inline (or in a
+/// follow-up `LS label` line when the inline form overflows
+/// `MAX_LINE_CP`) and a non-empty-label check is enforced. When false,
+/// every keyword line is emitted bare and the label check is skipped.
+fn encode_lines(track: &Track, emit_labels: bool) -> Result<Vec<String>> {
     let n = track.checkpoints.len();
     ensure!(
         n >= 2,
@@ -68,10 +90,12 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
                 cp.kind
             );
         }
-        ensure!(
-            !cp.label.trim().is_empty(),
-            "checkpoint[{i}] label is empty (encoder requires non-empty labels)"
-        );
+        if emit_labels {
+            ensure!(
+                !cp.label.trim().is_empty(),
+                "checkpoint[{i}] label is empty (encoder requires non-empty labels)"
+            );
+        }
         if matches!(cp.kind, CheckpointKind::Pause | CheckpointKind::Resume)
             && !matches!(cp.trigger, Trigger::Aabb(_))
         {
@@ -107,37 +131,13 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
             }
         };
 
-        match &cp.trigger {
+        let body = match &cp.trigger {
             Trigger::Aabb(aabb) => {
                 let (min, size) = aabb_to_min_size(*aabb)?;
-                let coords = format!(
+                format!(
                     "{},{},{} {},{},{}",
                     min[0], min[1], min[2], size[0], size[1], size[2]
-                );
-
-                let inline = format!("LS {keyword} {coords} {}", cp.label);
-                if inline.chars().count() <= MAX_LINE_CP {
-                    lines.push(inline);
-                    continue;
-                }
-
-                let bare = format!("LS {keyword} {coords}");
-                let bare_cp = bare.chars().count();
-                ensure!(
-                    bare_cp <= MAX_LINE_CP,
-                    "checkpoint[{i}] `{keyword}` line without label is {bare_cp} cp; cap is \
-                     {MAX_LINE_CP}"
-                );
-                lines.push(bare);
-
-                let label_line = format!("LS label {}", cp.label);
-                let label_cp = label_line.chars().count();
-                ensure!(
-                    label_cp <= MAX_LINE_CP,
-                    "checkpoint[{i}] label too long: standalone `LS label` line is {label_cp} cp; \
-                     cap is {MAX_LINE_CP}"
-                );
-                lines.push(label_line);
+                )
             }
             Trigger::MapLoaded(name) => {
                 ensure!(!name.trim().is_empty(), "checkpoint[{i}] map name is empty");
@@ -146,32 +146,11 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
                     "checkpoint[{i}] map name `{name}` contains a space; map names on the wire \
                      cannot contain spaces (the space delimits name from label)"
                 );
-
-                let inline = format!("LS {keyword} {name} {}", cp.label);
-                if inline.chars().count() <= MAX_LINE_CP {
-                    lines.push(inline);
-                    continue;
-                }
-
-                let bare = format!("LS {keyword} {name}");
-                let bare_cp = bare.chars().count();
-                ensure!(
-                    bare_cp <= MAX_LINE_CP,
-                    "checkpoint[{i}] `{keyword}` line without label is {bare_cp} cp; cap is \
-                     {MAX_LINE_CP}"
-                );
-                lines.push(bare);
-
-                let label_line = format!("LS label {}", cp.label);
-                let label_cp = label_line.chars().count();
-                ensure!(
-                    label_cp <= MAX_LINE_CP,
-                    "checkpoint[{i}] label too long: standalone `LS label` line is {label_cp} cp; \
-                     cap is {MAX_LINE_CP}"
-                );
-                lines.push(label_line);
+                name.clone()
             }
-        }
+        };
+
+        emit_keyword_line(&mut lines, i, keyword, &body, &cp.label, emit_labels)?;
     }
 
     lines.push("LS end".to_string());
@@ -185,4 +164,48 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
     }
 
     Ok(lines)
+}
+
+/// Push the `LS <keyword> <body> [label]` line(s) for one checkpoint.
+/// `body` is the already-formatted coord-triple pair (`<min> <size>`) or
+/// map name. With `emit_labels`, the label rides inline when it fits the
+/// per-line cap, otherwise the line is emitted bare followed by an
+/// `LS label <text>` line. Without `emit_labels`, only the bare line is
+/// emitted (disk geometry: labels come from `<Segment>` elements).
+fn emit_keyword_line(
+    lines: &mut Vec<String>,
+    i: usize,
+    keyword: &str,
+    body: &str,
+    label: &str,
+    emit_labels: bool,
+) -> Result<()> {
+    if emit_labels {
+        let inline = format!("LS {keyword} {body} {label}");
+        if inline.chars().count() <= MAX_LINE_CP {
+            lines.push(inline);
+            return Ok(());
+        }
+    }
+
+    let bare = format!("LS {keyword} {body}");
+    let bare_cp = bare.chars().count();
+    ensure!(
+        bare_cp <= MAX_LINE_CP,
+        "checkpoint[{i}] `{keyword}` line without label is {bare_cp} cp; cap is {MAX_LINE_CP}"
+    );
+    lines.push(bare);
+
+    if emit_labels {
+        let label_line = format!("LS label {label}");
+        let label_cp = label_line.chars().count();
+        ensure!(
+            label_cp <= MAX_LINE_CP,
+            "checkpoint[{i}] label too long: standalone `LS label` line is {label_cp} cp; cap is \
+             {MAX_LINE_CP}"
+        );
+        lines.push(label_line);
+    }
+
+    Ok(())
 }

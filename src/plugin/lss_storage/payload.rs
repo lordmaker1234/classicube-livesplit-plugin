@@ -1,207 +1,59 @@
 #[cfg(test)]
 mod tests;
 
-use anyhow::{Result, anyhow, bail, ensure};
-use base64::{Engine, engine::general_purpose::STANDARD};
-use serde::{Deserialize, Serialize};
+use anyhow::{Result, ensure};
 
-use crate::plugin::splits::geometry::{
-    Checkpoint, CheckpointKind, Track, Trigger, aabb_from_min_size, aabb_to_min_size,
+use crate::plugin::{
+    splits::geometry::Track,
+    track_source::{decode::decode_geometry, encode::encode_for_disk},
 };
 
-const SCHEMA_VERSION: u32 = 1;
-
-/// Name of the `<CustomVariable>` inside the `.lss` XML that holds
-/// the canonical payload bytes. Shared by the reader (lookup) and
-/// writer (build + dedup compare).
+/// Name of the `<CustomVariable>` inside the `.lss` XML that holds the
+/// canonical track geometry. Shared by the reader (lookup) and writer
+/// (build + dedup compare).
 pub const CUSTOM_VAR_NAME: &str = "ClassiCubeTrack";
 
-/// Canonical postcard form of a `Track`, stored (base64-wrapped) as
-/// the `ClassiCubeTrack` custom variable inside the `.lss` file.
-/// Schema-versioned so future plugin builds detect unknown payloads
-/// instead of misparsing.
-///
-/// postcard is a compact, deterministic binary format: field
-/// declaration order is the serialization order, so byte-equality is
-/// the comparison key for the writer's dedup gate.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub struct Payload {
-    pub v: u32,
-    pub name: String,
-    pub checkpoints: Vec<PayloadCheckpoint>,
-}
-
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub struct PayloadCheckpoint {
-    pub kind: PayloadKind,
-    pub trigger: PayloadTrigger,
-}
-
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub enum PayloadKind {
-    Start,
-    Split,
-    Pause,
-    Resume,
-    End,
-}
-
-/// Wire form of a `Trigger`. postcard encodes the enum as a varint
-/// variant index plus the variant's data. AABBs use the same
-/// quantized `[u16; 3]` min + `[u8; 3]` size encoding as the chat
-/// protocol, so a track encoded for chat and one persisted to disk
-/// describe identical geometry.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-pub enum PayloadTrigger {
-    Aabb { min: [u16; 3], size: [u8; 3] },
-    Map(String),
-}
-
-/// Convert a runtime `Track` to its canonical postcard byte
-/// representation. Errors if any AABB extent exceeds 255 blocks or
-/// the position-implicit `CheckpointKind` sequence is violated
-/// (index 0 must be `Start`, last must be `End`, middle must be
-/// `Split` / `Pause` / `Resume`).
-pub fn serialize_canonical(track: &Track) -> Result<Vec<u8>> {
-    let payload = track_to_payload(track)?;
-    let bytes =
-        postcard::to_allocvec(&payload).map_err(|e| anyhow!("postcard-encoding payload: {e}"))?;
-    Ok(bytes)
-}
-
-fn track_to_payload(track: &Track) -> Result<Payload> {
-    let n = track.checkpoints.len();
-    ensure!(
-        n >= 2,
-        "track has {n} checkpoint(s); need at least 2 (Start + End)"
-    );
-    ensure!(!track.name.trim().is_empty(), "track name is empty");
-
-    let mut checkpoints = Vec::with_capacity(n);
-    for (i, cp) in track.checkpoints.iter().enumerate() {
-        if !kind_valid_at(i, n, cp.kind) {
-            bail!(
-                "checkpoint[{i}] kind is {:?}; expected Start at index 0, End at last index, and \
-                 Split/Pause/Resume in between",
-                cp.kind
-            );
-        }
-        if matches!(cp.kind, CheckpointKind::Pause | CheckpointKind::Resume)
-            && !matches!(cp.trigger, Trigger::Aabb(_))
-        {
-            bail!(
-                "checkpoint[{i}] is {:?} kind but trigger is not AABB; Pause/Resume kinds are \
-                 AABB-only",
-                cp.kind
-            );
-        }
-        let trigger = match &cp.trigger {
-            Trigger::Aabb(aabb) => {
-                let (min, size) = aabb_to_min_size(*aabb)?;
-                PayloadTrigger::Aabb { min, size }
-            }
-            Trigger::MapLoaded(name) => {
-                ensure!(!name.trim().is_empty(), "checkpoint[{i}] map name is empty");
-                PayloadTrigger::Map(name.clone())
-            }
-        };
-        checkpoints.push(PayloadCheckpoint {
-            kind: kind_to_payload(cp.kind),
-            trigger,
-        });
-    }
-
-    Ok(Payload {
-        v: SCHEMA_VERSION,
-        name: track.name.clone(),
-        checkpoints,
-    })
-}
-
-fn kind_valid_at(i: usize, n: usize, k: CheckpointKind) -> bool {
-    if i == 0 {
-        k == CheckpointKind::Start
-    } else if i + 1 == n {
-        k == CheckpointKind::End
-    } else {
-        matches!(
-            k,
-            CheckpointKind::Split | CheckpointKind::Pause | CheckpointKind::Resume
-        )
-    }
-}
-
-fn kind_to_payload(k: CheckpointKind) -> PayloadKind {
-    match k {
-        CheckpointKind::Start => PayloadKind::Start,
-        CheckpointKind::Split => PayloadKind::Split,
-        CheckpointKind::Pause => PayloadKind::Pause,
-        CheckpointKind::Resume => PayloadKind::Resume,
-        CheckpointKind::End => PayloadKind::End,
-    }
-}
-
-fn kind_from_payload(k: &PayloadKind) -> CheckpointKind {
-    match k {
-        PayloadKind::Start => CheckpointKind::Start,
-        PayloadKind::Split => CheckpointKind::Split,
-        PayloadKind::Pause => CheckpointKind::Pause,
-        PayloadKind::Resume => CheckpointKind::Resume,
-        PayloadKind::End => CheckpointKind::End,
-    }
-}
-
-/// Parse a canonical payload. Rejects unknown schema versions so
-/// older plugin builds notice future format bumps instead of
-/// silently misreading them.
-pub fn parse(bytes: &[u8]) -> Result<Payload> {
-    let payload: Payload =
-        postcard::from_bytes(bytes).map_err(|e| anyhow!("postcard-decoding payload: {e}"))?;
-    if payload.v != SCHEMA_VERSION {
-        bail!(
-            "unknown payload schema version {} (expected {})",
-            payload.v,
-            SCHEMA_VERSION
-        );
-    }
-    Ok(payload)
-}
-
-/// Encode the canonical payload bytes into the ASCII string stored in the
-/// `<Variable name="ClassiCubeTrack">` text node. The canonical bytes are
-/// postcard (arbitrary binary -- control chars, non-UTF-8), which can't live
-/// in an XML text node at all, so base64 is mandatory. As a bonus, base64 has
-/// no whitespace for an XML pretty-printer to reflow, so the value can't be
-/// corrupted by a formatter wrapping the line.
-pub fn encode_var(canonical: &[u8]) -> String {
-    STANDARD.encode(canonical)
-}
-
-/// Decode the stored variable value back into canonical payload bytes.
-/// Strips any ASCII whitespace first, so a value that *was* line-wrapped by
-/// a formatter still decodes cleanly.
-pub fn decode_var(value: &str) -> Result<Vec<u8>> {
-    let cleaned: String = value.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-    Ok(STANDARD.decode(cleaned)?)
-}
-
 /// Default label for the Start checkpoint, which has no `<Segment>` of
-/// its own (see [`into_track`]). Matches the conventional Start label
+/// its own (see [`apply_labels`]). Matches the conventional Start label
 /// used elsewhere (fixture, status display).
 const START_LABEL: &str = "Start";
 
-/// Build a runtime `Track` from a parsed payload + the `.lss`'s
-/// `<Segments>` names, in order. Segments cover every checkpoint
-/// *except* the implicit Start at index 0 -- pressing Start is the
-/// run-start action, not a named split -- so the reader expects one
-/// label per non-Start checkpoint and gives the Start a default
-/// [`START_LABEL`]. Empty segment names get a generated `"split <i>"`
-/// placeholder so the runtime invariant "label is non-empty" holds.
-pub fn into_track(payload: Payload, labels: Vec<String>) -> Result<Track> {
-    let n = payload.checkpoints.len();
+/// Serialize a `Track`'s geometry to the canonical readable text stored
+/// in the `ClassiCubeTrack` custom variable: newline-joined bare `LS …`
+/// lines (`LS title …` / `LS cp …` / `LS map …` / `LS pause …` /
+/// `LS unpause …` / `LS end`), with no labels. Labels live in the `.lss`
+/// `<Segment>` elements instead, so a label-only change yields identical
+/// text and the writer's dedup gate skips it. livesplit-core XML-escapes
+/// the value on save and unescapes it on load, so `&` color codes in the
+/// track name round-trip safely.
+pub fn serialize_canonical(track: &Track) -> Result<String> {
+    Ok(encode_for_disk(track)?.join("\n"))
+}
+
+/// Parse the stored `ClassiCubeTrack` value (readable `LS …` geometry)
+/// plus the `.lss` `<Segment>` names into a runtime `Track`. The
+/// geometry decoder yields label-less checkpoints; [`apply_labels`]
+/// attaches the segment names (one per non-Start checkpoint), defaulting
+/// the Start to [`START_LABEL`]. A legacy base64/postcard value (or any
+/// non-`LS` text) fails inside [`decode_geometry`] -- the clean-break
+/// behavior: old files are skipped and regenerated by reload + save.
+pub fn parse(value: &str, labels: Vec<String>) -> Result<Track> {
+    let geometry = decode_geometry(value)?;
+    apply_labels(geometry, labels)
+}
+
+/// Attach `.lss` segment labels to a label-less geometry `Track`.
+/// Segments cover every checkpoint *except* the implicit Start at index
+/// 0 -- pressing Start is the run-start action, not a named split -- so
+/// the reader expects one label per non-Start checkpoint and gives the
+/// Start a default [`START_LABEL`]. Empty segment names get a generated
+/// `"split <i>"` placeholder so the runtime invariant "label is
+/// non-empty" holds.
+fn apply_labels(geometry: Track, labels: Vec<String>) -> Result<Track> {
+    let n = geometry.checkpoints.len();
     ensure!(
         n >= 2,
-        "payload has {n} checkpoint(s); need at least 2 (Start + End)"
+        "track has {n} checkpoint(s); need at least 2 (Start + End)"
     );
     ensure!(
         labels.len() + 1 == n,
@@ -211,49 +63,27 @@ pub fn into_track(payload: Payload, labels: Vec<String>) -> Result<Track> {
     );
 
     let mut labels = labels.into_iter();
-    let mut checkpoints = Vec::with_capacity(n);
-    for (i, pcp) in payload.checkpoints.into_iter().enumerate() {
-        let parsed_kind = kind_from_payload(&pcp.kind);
-        if !kind_valid_at(i, n, parsed_kind) {
-            bail!(
-                "checkpoint[{i}] kind is {parsed_kind:?}; expected Start at index 0, End at last \
-                 index, and Split/Pause/Resume in between"
-            );
-        }
-        let trigger = match pcp.trigger {
-            PayloadTrigger::Aabb { min, size } => Trigger::Aabb(aabb_from_min_size(min, size)),
-            PayloadTrigger::Map(name) => {
-                ensure!(!name.trim().is_empty(), "checkpoint[{i}] map name is empty");
-                Trigger::MapLoaded(name)
-            }
-        };
-        if matches!(parsed_kind, CheckpointKind::Pause | CheckpointKind::Resume)
-            && !matches!(trigger, Trigger::Aabb(_))
-        {
-            bail!(
-                "checkpoint[{i}] is {parsed_kind:?} kind but trigger is not AABB; Pause/Resume \
-                 kinds are AABB-only"
-            );
-        }
-        let label = if i == 0 {
-            // The Start has no segment; give it a stable default.
-            START_LABEL.to_owned()
-        } else {
-            // `next()` is guaranteed Some by the count check above.
-            match labels.next() {
-                Some(s) if !s.trim().is_empty() => s,
-                _ => format!("split {i}"),
-            }
-        };
-        checkpoints.push(Checkpoint {
-            kind: parsed_kind,
-            trigger,
-            label,
-        });
-    }
+    let checkpoints = geometry
+        .checkpoints
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut cp)| {
+            cp.label = if i == 0 {
+                // The Start has no segment; give it a stable default.
+                START_LABEL.to_owned()
+            } else {
+                // `next()` is guaranteed Some by the count check above.
+                match labels.next() {
+                    Some(s) if !s.trim().is_empty() => s,
+                    _ => format!("split {i}"),
+                }
+            };
+            cp
+        })
+        .collect();
 
     Ok(Track {
-        name: payload.name,
+        name: geometry.name,
         checkpoints,
     })
 }

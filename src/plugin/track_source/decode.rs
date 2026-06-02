@@ -3,6 +3,8 @@ mod tests;
 
 use std::{cell::RefCell, mem};
 
+use anyhow::{Result, anyhow, bail, ensure};
+
 use crate::plugin::splits::geometry::{
     Aabb, Checkpoint, CheckpointKind, Track, Trigger, aabb_from_min_size,
     validate_pause_resume_pairing,
@@ -67,13 +69,14 @@ fn strip_leading_color_code(s: &str) -> &str {
     }
 }
 
-/// Feed one chat line. Updates the thread-local state machine and
-/// returns the outcome the caller should react to.
-pub fn feed_chat_line(text: &str) -> FrameOutcome {
+/// Classify a single line into a parsed [`Line`], or `None` when it
+/// isn't one of ours (no `LS ` prefix after an optional leading color
+/// code). The keyword/coord parsing here is shared by the streaming chat
+/// path ([`feed_chat_line`]) and the batch disk decoder
+/// ([`decode_geometry`]); only the surrounding state handling differs.
+fn classify_line(text: &str) -> Option<Result<Line, String>> {
     let text = strip_leading_color_code(text);
-    let Some(after_prefix) = text.strip_prefix("LS ") else {
-        return FrameOutcome::NotOurs;
-    };
+    let after_prefix = text.strip_prefix("LS ")?;
 
     let (keyword, rest) = match after_prefix.find(' ') {
         Some(i) => (&after_prefix[..i], &after_prefix[i + 1..]),
@@ -103,15 +106,128 @@ pub fn feed_chat_line(text: &str) -> FrameOutcome {
         other => Err(format!("unknown keyword `{other}`")),
     };
 
-    let line = match parsed {
-        Ok(l) => l,
-        Err(e) => return FrameOutcome::ParseError(e),
+    Some(parsed)
+}
+
+/// Feed one chat line. Updates the thread-local state machine and
+/// returns the outcome the caller should react to.
+pub fn feed_chat_line(text: &str) -> FrameOutcome {
+    let line = match classify_line(text) {
+        None => return FrameOutcome::NotOurs,
+        Some(Ok(l)) => l,
+        Some(Err(e)) => return FrameOutcome::ParseError(e),
     };
 
     STATE.with(|cell| {
         let mut state = cell.borrow_mut();
         transition(&mut state, line)
     })
+}
+
+/// Batch-decode geometry-only `LS …` text (the `.lss` `ClassiCubeTrack`
+/// custom variable) into a label-less `Track`. Unlike [`feed_chat_line`]
+/// this is pure -- no thread-local state -- because the disk read runs
+/// off the main thread. Labels are intentionally dropped: they live in
+/// the `.lss` `<Segment>` elements and the storage layer re-attaches
+/// them.
+///
+/// Tolerant of hand-editing: a trailing `\r` (CRLF) and leading
+/// whitespace (formatter indentation) are stripped per line and blank
+/// lines are skipped. An inline label on a checkpoint line is ignored;
+/// a standalone `LS label` line is a parse error (labels don't belong in
+/// the geometry payload). Requires `LS title`, `LS end`, and at least 2
+/// checkpoints, then runs [`validate_pause_resume_pairing`]. Position
+/// implies kind: the first checkpoint becomes `Start`, `LS end` promotes
+/// the last `Split` to `End` (Pause/Resume can't be last), and a leading
+/// `LS pause` / `LS unpause` is rejected.
+pub fn decode_geometry(text: &str) -> Result<Track> {
+    let mut name: Option<String> = None;
+    let mut checkpoints: Vec<Checkpoint> = Vec::new();
+    let mut ended = false;
+
+    for raw in text.lines() {
+        let line = raw.trim_start().trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        let Some(parsed) = classify_line(line) else {
+            bail!("not an `LS` line: `{line}`");
+        };
+        let parsed = parsed.map_err(|e| anyhow!("{e}"))?;
+
+        ensure!(!ended, "content after `LS end`");
+
+        match parsed {
+            Line::Title { name: t } => {
+                ensure!(name.is_none(), "duplicate `LS title` line");
+                ensure!(checkpoints.is_empty(), "`LS title` after a checkpoint");
+                name = Some(t);
+            }
+            Line::Aabb { kind, aabb, .. } => {
+                ensure!(name.is_some(), "checkpoint before `LS title`");
+                let kind = if checkpoints.is_empty() {
+                    // First checkpoint is always Start; a leading
+                    // `LS pause` / `LS unpause` would land here with a
+                    // Pause/Resume kind -- reject it.
+                    ensure!(
+                        kind == CheckpointKind::Split,
+                        "first checkpoint must be `LS cp` or `LS map` (Start kind), not `LS \
+                         pause` / `LS unpause`"
+                    );
+                    CheckpointKind::Start
+                } else {
+                    kind
+                };
+                checkpoints.push(Checkpoint {
+                    kind,
+                    trigger: Trigger::Aabb(aabb),
+                    label: String::new(),
+                });
+            }
+            Line::Map { name: map, .. } => {
+                ensure!(name.is_some(), "checkpoint before `LS title`");
+                let kind = if checkpoints.is_empty() {
+                    CheckpointKind::Start
+                } else {
+                    CheckpointKind::Split
+                };
+                checkpoints.push(Checkpoint {
+                    kind,
+                    trigger: Trigger::MapLoaded(map),
+                    label: String::new(),
+                });
+            }
+            Line::End => {
+                ensure!(name.is_some(), "`LS end` before `LS title`");
+                ensure!(
+                    checkpoints.len() >= 2,
+                    "track needs at least 2 checkpoints before `LS end`"
+                );
+                let last = checkpoints.last_mut().expect("len >= 2 above");
+                ensure!(
+                    last.kind == CheckpointKind::Split,
+                    "last checkpoint before `LS end` must be a plain checkpoint (`LS cp` / `LS \
+                     map`), not {:?}",
+                    last.kind
+                );
+                last.kind = CheckpointKind::End;
+                ended = true;
+            }
+            Line::Label { .. } => {
+                bail!(
+                    "unexpected `LS label` line in geometry payload (labels live in <Segment> \
+                     elements)"
+                );
+            }
+        }
+    }
+
+    let name = name.ok_or_else(|| anyhow!("missing `LS title` line"))?;
+    ensure!(ended, "missing `LS end` line");
+
+    let track = Track { name, checkpoints };
+    validate_pause_resume_pairing(&track)?;
+    Ok(track)
 }
 
 enum Line {

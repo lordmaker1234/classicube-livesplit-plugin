@@ -42,18 +42,19 @@ fn unique_tmp_dir(prefix: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn build_lss_xml_roundtrips_canonical_payload() {
+fn build_lss_xml_stores_canonical_text() {
     let t = sample_track();
     let canonical = payload::serialize_canonical(&t).unwrap();
 
-    let xml = build_lss_xml(&t, "MyServer", &payload::encode_var(&canonical)).unwrap();
+    let xml = build_lss_xml(&t, "MyServer", &canonical).unwrap();
     let run = parse(&xml).expect("re-parse");
 
     let stored = run
         .metadata()
         .custom_variable_value(CUSTOM_VAR_NAME)
         .expect("ClassiCubeTrack present");
-    assert_eq!(payload::decode_var(stored).unwrap(), canonical);
+    // The stored value is the readable `LS …` geometry text verbatim.
+    assert_eq!(stored, canonical);
 
     // The Start checkpoint is the timer-side run-start action, not a
     // named split, so it's omitted from the segment list -- only "end"
@@ -67,20 +68,19 @@ fn build_lss_xml_roundtrips_canonical_payload() {
 }
 
 #[test]
-fn build_lss_xml_round_trips_through_into_track() {
+fn build_lss_xml_round_trips_through_parse() {
     let t = sample_track(); // [Start "start", End "end"]
     let canonical = payload::serialize_canonical(&t).unwrap();
 
-    let xml = build_lss_xml(&t, "Srv", &payload::encode_var(&canonical)).unwrap();
+    let xml = build_lss_xml(&t, "Srv", &canonical).unwrap();
     let run = parse(&xml).expect("re-parse");
 
     let stored = run
         .metadata()
         .custom_variable_value(CUSTOM_VAR_NAME)
         .expect("ClassiCubeTrack present");
-    let payload = payload::parse(&payload::decode_var(stored).unwrap()).unwrap();
     let labels: Vec<String> = run.segments().iter().map(|s| s.name().to_owned()).collect();
-    let back = payload::into_track(payload, labels).unwrap();
+    let back = payload::parse(stored, labels).unwrap();
 
     assert_eq!(back.checkpoints.len(), 2);
     // Start: kind + geometry survive; label defaults (no segment).
@@ -97,7 +97,7 @@ fn build_lss_xml_strips_color_codes_from_display() {
     t.name = "&aany%".to_owned();
     let canonical = payload::serialize_canonical(&t).unwrap();
 
-    let xml = build_lss_xml(&t, "&cMy&eServer", &payload::encode_var(&canonical)).unwrap();
+    let xml = build_lss_xml(&t, "&cMy&eServer", &canonical).unwrap();
     let run = parse(&xml).unwrap();
     let cat = run.category_name();
     assert!(
@@ -106,6 +106,30 @@ fn build_lss_xml_strips_color_codes_from_display() {
     );
     assert!(cat.contains("MyServer"));
     assert!(cat.contains("any%"));
+}
+
+#[test]
+fn track_name_with_color_code_round_trips_through_payload() {
+    // `&` in the track name lands in the `LS title` line. livesplit-core
+    // XML-escapes the custom-variable text on save and unescapes it on
+    // load, so the color code survives the round-trip intact (no manual
+    // escaping needed on our side).
+    let mut t = sample_track();
+    t.name = "&aany%".to_owned();
+    let canonical = payload::serialize_canonical(&t).unwrap();
+    assert!(canonical.starts_with("LS title &aany%"));
+
+    let xml = build_lss_xml(&t, "Srv", &canonical).unwrap();
+    let run = parse(&xml).expect("re-parse");
+    let stored = run
+        .metadata()
+        .custom_variable_value(CUSTOM_VAR_NAME)
+        .expect("ClassiCubeTrack present");
+    assert_eq!(stored, canonical);
+
+    let labels: Vec<String> = run.segments().iter().map(|s| s.name().to_owned()).collect();
+    let back = payload::parse(stored, labels).unwrap();
+    assert_eq!(back.name, "&aany%");
 }
 
 #[test]
@@ -144,6 +168,9 @@ fn save_track_to_writes_then_dedups() {
         SaveOutcome::AlreadyLatest => panic!("modified track should have written"),
     }
 
+    // Label-only change: the geometry text is identical (labels live in
+    // the `<Segment>` elements, not the payload), so the dedup gate still
+    // reports no change -- the no-bump-on-relabel guarantee.
     let mut t3 = t2.clone();
     t3.checkpoints[0].label = "renamed".to_owned();
     assert!(matches!(

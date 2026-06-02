@@ -1,7 +1,7 @@
 use classicube_sys::Vec3;
 
 use super::*;
-use crate::plugin::splits::geometry::{Aabb, Checkpoint, CheckpointKind, Track, Trigger};
+use crate::plugin::splits::geometry::{Aabb, Checkpoint, CheckpointKind, Trigger};
 
 fn aabb(min: (u16, u16, u16), max: (u16, u16, u16)) -> Aabb {
     Aabb {
@@ -44,7 +44,7 @@ fn segment_labels_of(t: &Track) -> Vec<String> {
 }
 
 #[test]
-fn canonical_is_byte_stable() {
+fn canonical_is_text_stable() {
     let t = sample_track();
     let a = serialize_canonical(&t).unwrap();
     let b = serialize_canonical(&t).unwrap();
@@ -52,11 +52,28 @@ fn canonical_is_byte_stable() {
 }
 
 #[test]
-fn round_trip_preserves_non_start_and_defaults_start_label() {
+fn serialized_text_is_readable_and_label_free() {
+    let t = sample_track();
+    let text = serialize_canonical(&t).unwrap();
+    // Bare keyword lines only: the segment labels ("start", "lobby",
+    // "end") never appear, there's no `LS label` line, and no inline
+    // label rides after the coords / map name.
+    assert_eq!(
+        text,
+        "LS title any%\nLS cp 64,40,128 2,3,2\nLS map AwesomeLobby\nLS cp 200,50,400 4,2,4\nLS end"
+    );
+    assert!(text.contains("LS title "));
+    assert!(text.contains("LS cp "));
+    assert!(text.contains("LS map "));
+    assert!(text.ends_with("LS end"));
+    assert!(!text.contains("LS label"));
+}
+
+#[test]
+fn round_trip_via_parse_defaults_start_label() {
     let t = sample_track(); // Start label is "start".
-    let bytes = serialize_canonical(&t).unwrap();
-    let payload = parse(&bytes).unwrap();
-    let back = into_track(payload, segment_labels_of(&t)).unwrap();
+    let text = serialize_canonical(&t).unwrap();
+    let back = parse(&text, segment_labels_of(&t)).unwrap();
 
     // Geometry, kinds, and non-start labels round-trip exactly.
     assert_eq!(back.name, t.name);
@@ -74,7 +91,7 @@ fn round_trip_preserves_non_start_and_defaults_start_label() {
 }
 
 #[test]
-fn label_only_change_yields_equal_bytes() {
+fn label_only_change_yields_equal_text() {
     let mut a = sample_track();
     let mut b = sample_track();
     for cp in &mut a.checkpoints {
@@ -83,13 +100,15 @@ fn label_only_change_yields_equal_bytes() {
     for cp in &mut b.checkpoints {
         cp.label = format!("{}-B", cp.label);
     }
-    let ba = serialize_canonical(&a).unwrap();
-    let bb = serialize_canonical(&b).unwrap();
-    assert_eq!(ba, bb, "labels must not affect canonical bytes");
+    assert_eq!(
+        serialize_canonical(&a).unwrap(),
+        serialize_canonical(&b).unwrap(),
+        "labels must not affect canonical text"
+    );
 }
 
 #[test]
-fn aabb_min_change_yields_different_bytes() {
+fn aabb_min_change_yields_different_text() {
     let a = sample_track();
     let mut b = sample_track();
     if let Trigger::Aabb(ref mut bb) = b.checkpoints[0].trigger {
@@ -103,7 +122,7 @@ fn aabb_min_change_yields_different_bytes() {
 }
 
 #[test]
-fn aabb_size_change_yields_different_bytes() {
+fn aabb_size_change_yields_different_text() {
     let a = sample_track();
     let mut b = sample_track();
     if let Trigger::Aabb(ref mut bb) = b.checkpoints[0].trigger {
@@ -116,7 +135,7 @@ fn aabb_size_change_yields_different_bytes() {
 }
 
 #[test]
-fn map_target_change_yields_different_bytes() {
+fn map_target_change_yields_different_text() {
     let a = sample_track();
     let mut b = sample_track();
     if let Trigger::MapLoaded(ref mut name) = b.checkpoints[1].trigger {
@@ -129,7 +148,7 @@ fn map_target_change_yields_different_bytes() {
 }
 
 #[test]
-fn checkpoint_count_change_yields_different_bytes() {
+fn checkpoint_count_change_yields_different_text() {
     let a = sample_track();
     let mut b = sample_track();
     let extra = Checkpoint {
@@ -148,7 +167,7 @@ fn checkpoint_count_change_yields_different_bytes() {
 }
 
 #[test]
-fn track_name_change_yields_different_bytes() {
+fn track_name_change_yields_different_text() {
     let a = sample_track();
     let mut b = sample_track();
     b.name = "100%".to_owned();
@@ -156,19 +175,6 @@ fn track_name_change_yields_different_bytes() {
         serialize_canonical(&a).unwrap(),
         serialize_canonical(&b).unwrap()
     );
-}
-
-#[test]
-fn rejects_unknown_schema_version() {
-    // A well-formed postcard payload whose version field doesn't match the
-    // one this build understands must be rejected, not misread.
-    let bad = Payload {
-        v: SCHEMA_VERSION + 1,
-        name: "x".to_owned(),
-        checkpoints: vec![],
-    };
-    let bytes = postcard::to_allocvec(&bad).unwrap();
-    assert!(parse(&bytes).is_err());
 }
 
 #[test]
@@ -192,60 +198,50 @@ fn rejects_bad_kind_sequence_on_serialize() {
 }
 
 #[test]
-fn into_track_substitutes_placeholder_for_empty_label() {
+fn parse_substitutes_placeholder_for_empty_label() {
     // sample_track is [Start, Split(lobby), End]; segments are the two
     // non-start checkpoints. An empty first segment is the Split at
     // checkpoint index 1, so the placeholder is "split 1".
     let t = sample_track();
-    let bytes = serialize_canonical(&t).unwrap();
-    let payload = parse(&bytes).unwrap();
+    let text = serialize_canonical(&t).unwrap();
     let labels = vec![String::new(), "end".into()];
-    let back = into_track(payload, labels).unwrap();
+    let back = parse(&text, labels).unwrap();
     assert_eq!(back.checkpoints[1].label, "split 1");
     // The Start always gets the default, regardless of segments.
     assert_eq!(back.checkpoints[0].label, "Start");
 }
 
 #[test]
-fn var_round_trips() {
-    let t = sample_track();
-    let bytes = serialize_canonical(&t).unwrap();
-    let encoded = encode_var(&bytes);
-    assert_eq!(decode_var(&encoded).unwrap(), bytes);
-}
-
-#[test]
-fn decode_var_ignores_whitespace() {
-    // Simulate an XML formatter reflowing the base64 value across lines:
-    // splice newlines and spaces into the middle. It must still decode to
-    // the original canonical bytes.
-    let t = sample_track();
-    let bytes = serialize_canonical(&t).unwrap();
-    let encoded = encode_var(&bytes);
-    let mid = encoded.len() / 2;
-    let wrapped = format!("{}\n        {}", &encoded[..mid], &encoded[mid..]);
-    assert_eq!(decode_var(&wrapped).unwrap(), bytes);
-}
-
-#[test]
-fn decode_var_rejects_garbage() {
-    assert!(decode_var("!! not base64 !!").is_err());
-}
-
-#[test]
-fn into_track_rejects_label_count_mismatch() {
+fn parse_rejects_label_count_mismatch() {
     let t = sample_track(); // 3 checkpoints -> expects 2 segment labels.
-    let bytes = serialize_canonical(&t).unwrap();
-    let payload = parse(&bytes).unwrap();
+    let text = serialize_canonical(&t).unwrap();
     // Too few.
-    assert!(into_track(payload, vec!["only".into()]).is_err());
+    assert!(parse(&text, vec!["only".into()]).is_err());
     // Too many: a label per checkpoint (the pre-change format) is now a
     // mismatch, since the Start no longer has a segment.
-    assert!(
-        into_track(
-            parse(&bytes).unwrap(),
-            vec!["start".into(), "lobby".into(), "end".into()]
-        )
-        .is_err()
-    );
+    assert!(parse(&text, vec!["start".into(), "lobby".into(), "end".into()]).is_err());
+}
+
+#[test]
+fn parse_rejects_legacy_non_ls_value() {
+    // An old base64/postcard payload doesn't start with `LS `, so the
+    // geometry decoder rejects it cleanly -- the clean-break behavior
+    // (old files are skipped and regenerated by reload + save).
+    assert!(parse("AQVhbnklAwAB", vec!["lobby".into(), "end".into()]).is_err());
+}
+
+#[test]
+fn parse_tolerates_indentation_and_crlf() {
+    // A hand-edited / XML-reflowed value with leading indentation on
+    // each line and CRLF endings still decodes to the same geometry.
+    let t = sample_track();
+    let text = serialize_canonical(&t).unwrap();
+    let messy = text
+        .lines()
+        .map(|l| format!("    {l}"))
+        .collect::<Vec<_>>()
+        .join("\r\n");
+    let back = parse(&messy, segment_labels_of(&t)).unwrap();
+    let clean = parse(&text, segment_labels_of(&t)).unwrap();
+    assert_eq!(back, clean);
 }

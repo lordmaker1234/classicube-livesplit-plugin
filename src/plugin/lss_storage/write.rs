@@ -19,6 +19,7 @@ use crate::{
             payload::{self, CUSTOM_VAR_NAME},
         },
         splits::geometry::Track,
+        track_source::decode,
     },
 };
 
@@ -83,8 +84,7 @@ pub(super) fn save_track_to(
     let final_path = dir.join(format!("{category}-v{next_version}.lss"));
     let tmp_path = dir.join(format!("{category}-v{next_version}.lss.tmp"));
 
-    let encoded = payload::encode_var(&canonical);
-    let xml = build_lss_xml(track, server_display, &encoded)?;
+    let xml = build_lss_xml(track, server_display, &canonical)?;
 
     fs::write(&tmp_path, xml.as_bytes())
         .with_context(|| format!("writing {}", tmp_path.display()))?;
@@ -103,7 +103,7 @@ pub(super) fn save_track_to(
     Ok(SaveOutcome::Wrote(final_path))
 }
 
-fn same_as_latest(path: &Path, canonical: &[u8]) -> Result<bool> {
+fn same_as_latest(path: &Path, canonical: &str) -> Result<bool> {
     let xml = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -122,20 +122,22 @@ fn same_as_latest(path: &Path, canonical: &[u8]) -> Result<bool> {
         .metadata()
         .custom_variable_value(CUSTOM_VAR_NAME)
         .unwrap_or("");
-    // The dedup key is the canonical postcard bytes, not the base64
-    // transport form. Decode the stored value back; a decode failure
-    // (corrupt / legacy non-base64 value) falls through to "write a new
-    // version", the same graceful behavior as a parse failure above.
-    match payload::decode_var(stored) {
-        Ok(decoded) => Ok(decoded == canonical),
+    // The dedup key is the canonical `LS …` geometry text. Re-canonicalize
+    // the stored value (decode -> re-encode) so XML reflow / whitespace
+    // and label-only edits (labels aren't in the payload) compare equal.
+    // A failure to decode (legacy base64 value, corrupt, or reflowed
+    // beyond recovery) falls through to "write a new version" -- the same
+    // graceful behavior as a parse failure above.
+    match decode::decode_geometry(stored).and_then(|t| payload::serialize_canonical(&t)) {
+        Ok(recanonical) => Ok(recanonical == canonical),
         Err(e) => {
-            debug!(?path, error = ?e, "could not base64-decode stored payload; will write new");
+            debug!(?path, error = ?e, "could not re-canonicalize stored payload; will write new");
             Ok(false)
         }
     }
 }
 
-fn build_lss_xml(track: &Track, server_display: &str, encoded: &str) -> Result<String> {
+fn build_lss_xml(track: &Track, server_display: &str, canonical: &str) -> Result<String> {
     let mut run = Run::new();
     run.set_game_name("ClassiCube");
 
@@ -153,14 +155,15 @@ fn build_lss_xml(track: &Track, server_display: &str, encoded: &str) -> Result<S
         run.push_segment(Segment::new(cp.label.as_str()));
     }
 
-    // `encoded` is the base64 transport form of the canonical payload
-    // bytes. The payload is binary postcard, which can't live in an XML text
-    // node directly; base64 also keeps the value free of any whitespace an
-    // external XML formatter could reflow.
+    // `canonical` is the readable geometry-only `LS …` text (newline-
+    // joined bare lines). livesplit-core XML-escapes the value on save
+    // and unescapes it on load, so `&` color codes in the track name
+    // round-trip safely. Labels are NOT in this payload -- they live in
+    // the `<Segment>` elements above.
     run.metadata_mut()
         .custom_variable_mut(CUSTOM_VAR_NAME)
         .permanent()
-        .set_value(encoded);
+        .set_value(canonical);
 
     let mut xml = String::new();
     save_run(&run, &mut xml).map_err(|e| anyhow!("saving Run to XML: {e}"))?;
