@@ -1,6 +1,6 @@
 use std::{cell::RefCell, os::raw::c_int, slice};
 
-use classicube_helpers::{chat, tab_list::TabList};
+use classicube_helpers::chat;
 use classicube_sys::{OwnedChatCommand, cc_string};
 use tracing::debug;
 
@@ -54,7 +54,6 @@ fn print_usage() {
     chat_print(
         "&e  /client LiveSplit nas               (copies all lines, \\n-separated, to clipboard)",
     );
-    chat_print("&e  /client LiveSplit tabdump           (dump tab-list entries for debugging)");
 }
 
 /// Parse a checkpoint index argument, chat-printing an error and
@@ -279,27 +278,6 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                 chat::send(payload);
             }
         }
-        ["tabdump"] => {
-            let tab_list = TabList::new();
-            let mut entries = tab_list.get_all();
-            entries.sort_by_key(|(id, _)| *id);
-            chat_print(&format!(
-                "&aLiveSplit: tab list ({} entries)",
-                entries.len()
-            ));
-            for (id, weak) in entries {
-                let Some(entry) = weak.upgrade() else {
-                    continue;
-                };
-                chat_print(&format!(
-                    "&e  [{id}] real={:?} nick={:?} group={:?} rank={}",
-                    entry.get_real_name(),
-                    entry.get_nick_name(),
-                    entry.get_group(),
-                    entry.get_rank(),
-                ));
-            }
-        }
         ["nas"] => {
             if let Some(lines) = encode_track_or_print_error() {
                 let joined = lines.join("\n");
@@ -353,7 +331,6 @@ impl CommandModule {
                     "&a/client LiveSplit track encode",
                     "&a/client LiveSplit mb <subcmd ...>",
                     "&a/client LiveSplit nas",
-                    "&a/client LiveSplit tabdump",
                 ],
             );
             cmd.register();
