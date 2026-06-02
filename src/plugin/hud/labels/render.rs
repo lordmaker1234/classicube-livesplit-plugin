@@ -1,8 +1,9 @@
 //! Camera-facing billboard renderer for the floating checkpoint labels.
 //!
-//! Installs an `OwnedScreen` render hook at `Priority::UnderHud` (so the
-//! chatbox / hotbar / crosshair still draw on top) and, each frame, draws
-//! every cached label as a world-anchored billboard above its box.
+//! Installs an `OwnedScreen` render hook just below the HUD (priority
+//! `HUD - 2`, so the chatbox / hotbar / crosshair still draw on top) and,
+//! each frame, draws every cached label as a world-anchored billboard above
+//! its box.
 //!
 //! The billboard math is the engine's name-tag technique: world-space verts
 //! built from the camera's right/up basis (the `Gfx.View` rows), via the
@@ -134,9 +135,13 @@ unsafe extern "C" fn render(_elem: *mut c_void, _delta: f32) {
 pub(super) fn install() -> OwnedScreen {
     let mut screen = OwnedScreen::new();
     screen.on_render(render);
-    // Under the HUD (priority 10) so the chatbox / hotbar / crosshair draw on
-    // top; nameplates already happened in the 3D phase, so labels land above
-    // nameplates and under the HUD.
-    screen.add(Priority::UnderHud);
+    // One slot below chat-bubbles, which also registers at UnderHud
+    // (HUD - 1 = 9). ClassiCube's Gui_Add allows one screen per priority and
+    // evicts the incumbent, so sharing UnderHud makes whichever plugin loads
+    // second clobber the other's render hook. Sit at HUD - 2 (= 8): still
+    // under the HUD (chatbox / hotbar / crosshair draw on top) and under the
+    // bubbles, but its own slot so both coexist regardless of load order.
+    // Nameplates already drew in the 3D phase, so labels still land above them.
+    screen.add(Priority::Custom(Priority::Hud.to_u8() - 2));
     screen
 }
