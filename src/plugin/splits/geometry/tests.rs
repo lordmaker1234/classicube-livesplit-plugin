@@ -708,42 +708,48 @@ fn unload_clears_starting_map() {
 #[test]
 fn aabbs_on_map_single_map_shows_all_on_load_map_none_off_it() {
     let track = linear_track();
-    // `linear_track`'s checkpoints all carry an empty label.
+    // `linear_track`'s checkpoints all carry an empty label. `next_index`
+    // is `None` here, so every `is_next` flag is `false` (the next-flag
+    // behavior is exercised in `aabbs_on_map_marks_next_index_respecting_scope`).
     let expected = vec![
         (
             CheckpointKind::Start,
             aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
             String::new(),
+            false,
         ),
         (
             CheckpointKind::Split,
             aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
             String::new(),
+            false,
         ),
         (
             CheckpointKind::Split,
             aabb((20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
             String::new(),
+            false,
         ),
         (
             CheckpointKind::End,
             aabb((30.0, 0.0, 0.0), (32.0, 4.0, 2.0)),
             String::new(),
+            false,
         ),
     ];
     // On the load map: every AABB is in scope.
     assert_eq!(
-        aabbs_on_map(&track, Some("home"), Some("home")),
+        aabbs_on_map(&track, Some("home"), Some("home"), None),
         expected,
         "all AABBs visible on the starting map"
     );
     // On a different map: a single-map track's AABBs are scoped to the
     // starting map, so none show.
-    assert!(aabbs_on_map(&track, Some("home"), Some("away")).is_empty());
+    assert!(aabbs_on_map(&track, Some("home"), Some("away"), None).is_empty());
     // World unknown: nothing to anchor scope against.
-    assert!(aabbs_on_map(&track, Some("home"), None).is_empty());
+    assert!(aabbs_on_map(&track, Some("home"), None, None).is_empty());
     // Starting map unknown and no preceding MapLoaded: nothing in scope.
-    assert!(aabbs_on_map(&track, None, Some("home")).is_empty());
+    assert!(aabbs_on_map(&track, None, Some("home"), None).is_empty());
 }
 
 #[test]
@@ -764,41 +770,121 @@ fn aabbs_on_map_multi_map_partitions_by_scope() {
     };
 
     assert_eq!(
-        aabbs_on_map(&track, Some("starting"), Some("starting")),
+        aabbs_on_map(&track, Some("starting"), Some("starting"), None),
         vec![
             (
                 CheckpointKind::Start,
                 aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
                 String::new(),
+                false,
             ),
             (
                 CheckpointKind::Split,
                 aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
                 String::new(),
+                false,
             ),
         ],
         "only the pre-transition AABBs show on the starting map"
     );
 
     assert_eq!(
-        aabbs_on_map(&track, Some("starting"), Some("mapname")),
+        aabbs_on_map(&track, Some("starting"), Some("mapname"), None),
         vec![
             (
                 CheckpointKind::Split,
                 aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0)),
                 String::new(),
+                false,
             ),
             (
                 CheckpointKind::End,
                 aabb((20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
                 String::new(),
+                false,
             ),
         ],
         "only the post-transition AABBs show on the second map"
     );
 
     // A map that's in neither section: nothing in scope.
-    assert!(aabbs_on_map(&track, Some("starting"), Some("elsewhere")).is_empty());
+    assert!(aabbs_on_map(&track, Some("starting"), Some("elsewhere"), None).is_empty());
+}
+
+#[test]
+fn aabbs_on_map_marks_next_index_respecting_scope() {
+    // Two map sections with a duplicate-geometry AABB across them: index 1
+    // on the starting map and index 3 on "mapname" share the same box. The
+    // next-flag must key off the track-wide source index, not geometry, so
+    // the duplicate box is never mis-flagged.
+    let start_box = aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0));
+    let mid_box = aabb((10.0, 0.0, 0.0), (12.0, 4.0, 2.0));
+    let end_box = aabb((20.0, 0.0, 0.0), (22.0, 4.0, 2.0));
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)), // idx 0, starting
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // idx 1, starting
+            cp_map(CheckpointKind::Split, "mapname"),                    // idx 2
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // idx 3, mapname (dup of 1)
+            cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),   // idx 4, mapname
+        ],
+    };
+
+    // next = Start (idx 0) on the starting map: Start flagged, the
+    // starting Split not.
+    assert_eq!(
+        aabbs_on_map(&track, Some("starting"), Some("starting"), Some(0)),
+        vec![
+            (CheckpointKind::Start, start_box, String::new(), true),
+            (CheckpointKind::Split, mid_box, String::new(), false),
+        ],
+    );
+
+    // next = idx 1 (the starting Split): it's the one flagged.
+    assert_eq!(
+        aabbs_on_map(&track, Some("starting"), Some("starting"), Some(1)),
+        vec![
+            (CheckpointKind::Start, start_box, String::new(), false),
+            (CheckpointKind::Split, mid_box, String::new(), true),
+        ],
+    );
+
+    // next = idx 1 but we're on "mapname": idx 1 is out of scope, so
+    // nothing is flagged -- and the duplicate-geometry idx 3 (same box)
+    // is NOT mis-flagged.
+    assert_eq!(
+        aabbs_on_map(&track, Some("starting"), Some("mapname"), Some(1)),
+        vec![
+            (CheckpointKind::Split, mid_box, String::new(), false),
+            (CheckpointKind::End, end_box, String::new(), false),
+        ],
+        "out-of-scope next index must not mark a same-geometry box on another map",
+    );
+
+    // next = idx 3 (the mapname Split): flagged on "mapname".
+    assert_eq!(
+        aabbs_on_map(&track, Some("starting"), Some("mapname"), Some(3)),
+        vec![
+            (CheckpointKind::Split, mid_box, String::new(), true),
+            (CheckpointKind::End, end_box, String::new(), false),
+        ],
+    );
+
+    // next = idx 2, the MapLoaded checkpoint (no AABB): nothing flagged.
+    assert!(
+        aabbs_on_map(&track, Some("starting"), Some("starting"), Some(2))
+            .iter()
+            .all(|(.., is_next)| !is_next),
+        "a MapLoaded next index matches no AABB entry",
+    );
+
+    // None: nothing flagged.
+    assert!(
+        aabbs_on_map(&track, Some("starting"), Some("starting"), None)
+            .iter()
+            .all(|(.., is_next)| !is_next),
+    );
 }
 
 // ---- observe_map (tick-driven map-change detection) ----

@@ -383,28 +383,39 @@ pub fn step<F: FnMut(Command), P: FnMut(), R: FnMut()>(
 }
 
 /// AABB checkpoints whose derived map scope matches `world`, paired
-/// with their kind and label, in checkpoint order. Mirrors the scope
-/// walk in [`step`]: a running `current_map` seeded from
-/// `starting_map`, advanced by each `Trigger::MapLoaded`; an `Aabb` is
-/// in scope only while `current_map == Some(world)`. Used by the
-/// in-world HUD to draw just the boxes (and their floating labels)
-/// relevant to the player's current map. Empty when `world` is `None`,
-/// or when no in-scope concrete map matches it.
+/// with their kind, label, and an "is the next eligible checkpoint"
+/// flag, in checkpoint order. Mirrors the scope walk in [`step`]: a
+/// running `current_map` seeded from `starting_map`, advanced by each
+/// `Trigger::MapLoaded`; an `Aabb` is in scope only while
+/// `current_map == Some(world)`. Used by the in-world HUD to draw just
+/// the boxes (and their floating labels) relevant to the player's
+/// current map. Empty when `world` is `None`, or when no in-scope
+/// concrete map matches it.
+///
+/// The final `bool` is `next_index == Some(i)` for the checkpoint's
+/// **track-wide** index `i` (not its position in the filtered output),
+/// so the HUD can highlight the one checkpoint the run cursor points
+/// at. Because the comparison is on the source index inside the same
+/// scope walk, a duplicate-geometry AABB on a different map section is
+/// never mis-flagged. Pass `None` to flag nothing (e.g. no run cursor
+/// to highlight); a `Some(i)` that lands on a `Trigger::MapLoaded`
+/// checkpoint or an off-map AABB simply matches no returned entry.
 #[must_use]
 pub fn aabbs_on_map(
     track: &Track,
     starting_map: Option<&str>,
     world: Option<&str>,
-) -> Vec<(CheckpointKind, Aabb, String)> {
+    next_index: Option<usize>,
+) -> Vec<(CheckpointKind, Aabb, String, bool)> {
     let mut current_map = starting_map;
     let mut out = Vec::new();
-    for cp in &track.checkpoints {
+    for (i, cp) in track.checkpoints.iter().enumerate() {
         match &cp.trigger {
             Trigger::Aabb(aabb) => {
                 if let (Some(t), Some(w)) = (current_map, world)
                     && t == w
                 {
-                    out.push((cp.kind, *aabb, cp.label.clone()));
+                    out.push((cp.kind, *aabb, cp.label.clone(), next_index == Some(i)));
                 }
             }
             Trigger::MapLoaded(name) => current_map = Some(name.as_str()),

@@ -62,10 +62,13 @@ thread_local! {
     /// [`reconcile`] when the visible set changes.
     static LABELS: RefCell<Vec<Label>> = const { RefCell::new(Vec::new()) };
 
-    /// The `(kind, aabb, label)` set [`LABELS`] was last built from -- the
-    /// reconcile diff key. Mirrors the boxes' `LAST_APPLIED` cache so the two
-    /// layers invalidate in lockstep on a map crossing.
-    static LAST_LABEL_SET: RefCell<Vec<(CheckpointKind, Aabb, String)>> =
+    /// The `(kind, aabb, label, is_next)` set [`LABELS`] was last built
+    /// from -- the reconcile diff key (the raw `visible` 4-tuple, not the
+    /// decorated display string). Mirrors the boxes' `LAST_APPLIED` cache so
+    /// the two layers invalidate in lockstep on a map crossing, and carrying
+    /// `is_next` rebuilds the textures when the run cursor advances (the
+    /// marker/color moves to the new next checkpoint).
+    static LAST_LABEL_SET: RefCell<Vec<(CheckpointKind, Aabb, String, bool)>> =
         const { RefCell::new(Vec::new()) };
 }
 
@@ -125,11 +128,12 @@ impl Module for LabelsModule {
 }
 
 /// Rebuild the cached label textures to match `visible` (the map-scoped
-/// `(kind, aabb, label)` set, already capped/derived by the splits layer).
-/// No-op when `visible` equals the cached set. The `kind` is unused for
-/// drawing (labels are plain white regardless) but is part of the diff key so
-/// the cache tracks the boxes exactly.
-pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String)]) {
+/// `(kind, aabb, label, is_next)` set, already capped/derived by the splits
+/// layer). No-op when `visible` equals the cached set. The `kind` is unused
+/// for drawing (non-next labels are plain white regardless) but is part of
+/// the diff key so the cache tracks the boxes exactly; `is_next` drives the
+/// `> ` marker + highlight color on the run's next-target label.
+pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
     // While the GPU context is lost we can't (re)build textures. Leave the
     // cache exactly as `context::context_lost`'s `invalidate()` left it
     // (empty) and bail, so a tick landing in the lost window doesn't
@@ -146,13 +150,22 @@ pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String)]) {
     // actually draw (the parent reconcile zips installs against the same
     // range).
     let mut labels = Vec::new();
-    for (_kind, aabb, label) in visible.iter().take(HUD_ID_COUNT) {
-        if label.is_empty() {
+    for (_kind, aabb, label, is_next) in visible.iter().take(HUD_ID_COUNT) {
+        // The next-target checkpoint always shows a cue: a "> " marker in
+        // the highlight color, prepended to its label (or standing alone
+        // when the label is empty). The marker is positional, so it
+        // composes with a future kind-colored label format; only the
+        // fixed `&e` color would need revisiting when that lands.
+        let display = if *is_next {
+            format!("&e> {label}")
+        } else if label.is_empty() {
             // Nothing to draw; the box still shows. Cached below so this
             // doesn't churn every tick.
             continue;
-        }
-        let Some(tex) = texture::create_label_texture(label) else {
+        } else {
+            label.clone()
+        };
+        let Some(tex) = texture::create_label_texture(&display) else {
             continue;
         };
         let (px_w, px_h) = {

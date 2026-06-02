@@ -4,8 +4,9 @@
 //! `Selections_Add` / `Selections_Remove` `CC_API`, color-coded by
 //! `CheckpointKind`. The engine re-renders its selection list every frame,
 //! so this layer never touches the GPU -- it's pure state management: each
-//! tick [`reconcile`] diffs the desired `(kind, aabb)` set against the
-//! installed one ([`LAST_APPLIED`]) and only calls the engine on a change.
+//! tick [`reconcile`] diffs the desired `(kind, aabb, is_next)` set against
+//! the installed one ([`LAST_APPLIED`]) and only calls the engine on a
+//! change. The next-target box is drawn at a higher alpha (same kind hue).
 
 use std::cell::RefCell;
 
@@ -20,15 +21,18 @@ use crate::plugin::{
 
 thread_local! {
     /// The scoped AABB set the currently-installed selections reflect:
-    /// exactly the `(kind, aabb)` pairs we last drew, in draw order. The
-    /// tick reconcile short-circuits while this equals the want-state,
-    /// so steady-state cost is one walk + compare per tick. Caching the
-    /// *filtered* set (not the whole `Track`) means a map crossing --
-    /// which changes which AABBs are in scope -- naturally invalidates
-    /// the cache. Reset to empty on map change / reset, because the
+    /// exactly the `(kind, aabb, is_next)` triples we last drew, in draw
+    /// order. The tick reconcile short-circuits while this equals the
+    /// want-state, so steady-state cost is one walk + compare per tick.
+    /// Caching the *filtered* set (not the whole `Track`) means a map
+    /// crossing -- which changes which AABBs are in scope -- naturally
+    /// invalidates the cache; carrying `is_next` means the run cursor
+    /// advancing (same kind+aabb set, different highlight) likewise
+    /// forces a re-add. Reset to empty on map change / reset, because the
     /// engine wipes its own selection list on `OnNewMap` / `Reset` and
     /// our cache would otherwise wrongly suppress the re-add.
-    static LAST_APPLIED: RefCell<Vec<(CheckpointKind, Aabb)>> = const { RefCell::new(Vec::new()) };
+    static LAST_APPLIED: RefCell<Vec<(CheckpointKind, Aabb, bool)>> =
+        const { RefCell::new(Vec::new()) };
 
     /// Selection ids we currently have installed, so the next reconcile
     /// removes exactly what it added.
@@ -71,10 +75,12 @@ impl Module for BoxesModule {
 }
 
 /// Recompute and apply the desired selection set from the map-scoped
-/// `visible` set (the boxes ignore the per-checkpoint label). Cheap no-op
-/// while the want-state is unchanged.
-pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String)]) {
-    let want: Vec<(CheckpointKind, Aabb)> = visible.iter().map(|(k, a, _)| (*k, *a)).collect();
+/// `visible` set (the boxes ignore the per-checkpoint label but keep the
+/// `is_next` highlight flag). Cheap no-op while the want-state is
+/// unchanged.
+pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
+    let want: Vec<(CheckpointKind, Aabb, bool)> =
+        visible.iter().map(|(k, a, _, n)| (*k, *a, *n)).collect();
 
     if LAST_APPLIED.with_borrow(|last| *last == want) {
         return;
@@ -98,10 +104,10 @@ pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String)]) {
 
     ACTIVE_IDS.with_borrow_mut(|ids| {
         // zip stops at the shorter side, capping installs at HUD_ID_COUNT.
-        for (id, (kind, aabb)) in (HUD_ID_BASE..=u8::MAX).zip(&want) {
+        for (id, (kind, aabb, is_next)) in (HUD_ID_BASE..=u8::MAX).zip(&want) {
             let p1 = ivec3(aabb.min);
             let p2 = ivec3(aabb.max);
-            unsafe { Selections_Add(id, &p1, &p2, color_for_kind(*kind)) };
+            unsafe { Selections_Add(id, &p1, &p2, color_for_kind(*kind, *is_next)) };
             ids.push(id);
         }
     });
@@ -143,22 +149,29 @@ fn ivec3(v: Vec3) -> IVec3 {
     }
 }
 
-/// Alpha applied to every checkpoint box. The engine alpha-blends both
-/// the translucent face fill and the (RGB-inverted) wireframe edges off
-/// this same byte (`SelectionBox.c` BuildFaces / BuildEdges), so it's a
-/// uniform fade -- kept low enough to read as "mostly transparent" but
+/// Alpha applied to a non-next checkpoint box. The engine alpha-blends
+/// both the translucent face fill and the (RGB-inverted) wireframe edges
+/// off this same byte (`SelectionBox.c` BuildFaces / BuildEdges), so it's
+/// a uniform fade -- kept low enough to read as "mostly transparent" but
 /// high enough that the outline stays legible against the world.
 const BOX_ALPHA: u8 = 64;
 
-fn color_for_kind(kind: CheckpointKind) -> PackedCol {
+/// Alpha for the run's next-target box. Same kind hue as every other box
+/// (so it still reads as "yellow = split" etc.), just far more opaque so
+/// it pops as the one to head for. Stays legible against all five kind
+/// colors since only the alpha changes.
+const NEXT_BOX_ALPHA: u8 = 170;
+
+fn color_for_kind(kind: CheckpointKind, is_next: bool) -> PackedCol {
     // `PackedCol_Make` is the classicube-sys const-fn wrapper around the
     // engine's `PackedCol_Make` macro -- it builds the word from the
     // platform-correct channel shifts, so we don't hand-roll the packing.
+    let a = if is_next { NEXT_BOX_ALPHA } else { BOX_ALPHA };
     match kind {
-        CheckpointKind::Start => PackedCol_Make(0, 255, 0, BOX_ALPHA), // green
-        CheckpointKind::Split => PackedCol_Make(255, 255, 0, BOX_ALPHA), // yellow
-        CheckpointKind::Pause => PackedCol_Make(0, 200, 255, BOX_ALPHA), // cyan
-        CheckpointKind::Resume => PackedCol_Make(255, 140, 0, BOX_ALPHA), // orange
-        CheckpointKind::End => PackedCol_Make(255, 0, 0, BOX_ALPHA),   // red
+        CheckpointKind::Start => PackedCol_Make(0, 255, 0, a), // green
+        CheckpointKind::Split => PackedCol_Make(255, 255, 0, a), // yellow
+        CheckpointKind::Pause => PackedCol_Make(0, 200, 255, a), // cyan
+        CheckpointKind::Resume => PackedCol_Make(255, 140, 0, a), // orange
+        CheckpointKind::End => PackedCol_Make(255, 0, 0, a),   // red
     }
 }
