@@ -101,6 +101,24 @@ pub fn save_current_track() {
     async_manager::spawn(write::save_track(track, server, map, true));
 }
 
+/// Load a track from disk on demand (`/client LiveSplit load [filename]`).
+/// `None` loads the newest `.lss`; `Some(name)` a specific file from the
+/// current `(server, map)` directory. Resolves `(server, map)` here on
+/// the main thread (both read engine globals) and hands owned strings to
+/// the disk-reading task. Not gated on `require_connected()` /
+/// `run_in_progress()` -- the command is explicit.
+pub fn load_track_command(filename: Option<String>) {
+    let Some(server) = current_server_display() else {
+        chat_print("&cLiveSplit: cannot resolve server name to load from");
+        return;
+    };
+    let Some(map) = splits::current_map() else {
+        chat_print("&cLiveSplit: no current map to load a track for");
+        return;
+    };
+    async_manager::spawn(read::load_command(server, map, filename));
+}
+
 /// Resolve the unsanitized display server name. Returns
 /// `"singleplayer"` placeholder when in singleplayer mode (the wire
 /// `Server.Name` is empty there). Color codes are left in place for

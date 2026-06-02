@@ -1,6 +1,9 @@
+#[cfg(test)]
+mod tests;
+
 use std::{fs, path::Path, time::SystemTime};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use classicube_helpers::async_manager;
 use livesplit_core::Run;
 use tracing::{debug, info};
@@ -47,6 +50,101 @@ pub async fn try_autoload(server: String, map: String) {
         Err(e) => {
             debug!("autoload skipped: {e:#}");
         }
+    }
+}
+
+/// On-demand load for `/client LiveSplit load [filename]`. `None` picks
+/// the newest `.lss` by mtime (same selection as autoload); `Some(name)`
+/// loads that specific file from the `(server, map)` directory. Unlike
+/// autoload, this surfaces the not-found / parse-error cases to chat and
+/// is NOT gated on `run_in_progress()` (the command is explicit). When
+/// the load aborts an in-progress run, a connected timer is reset so it
+/// doesn't keep running against stale segments.
+pub async fn load_command(server: String, map: String, filename: Option<String>) {
+    match resolve_for_load(&server, &map, filename.as_deref()) {
+        Ok((track, source)) => {
+            async_manager::spawn_on_main_thread(async move {
+                let was_in_progress = splits::run_in_progress();
+                // `false` => plugin mid-teardown (`SplitsState::load`
+                // returned `None`); nothing loaded, nothing to reset.
+                if splits::load_track(track, &source) {
+                    splits::reset_timer_if_was_running(was_in_progress);
+                }
+            });
+        }
+        Err(e) => chat_print_async(format!("&cLiveSplit: {e:#}")),
+    }
+}
+
+/// Resolve the file to load and parse it into a `Track`. Returns the
+/// track plus its file basename (used as the `source` label in the
+/// `load_track` success chat line). Errors carry a user-facing message.
+fn resolve_for_load(server: &str, map: &str, filename: Option<&str>) -> Result<(Track, String)> {
+    let dir = path::track_dir(server, map);
+    let chosen = match filename {
+        None => newest_lss(&dir)?
+            .ok_or_else(|| anyhow!("no track files for this map ({})", dir.display()))?,
+        Some(name) => {
+            let fname =
+                normalize_lss_filename(name).ok_or_else(|| anyhow!("invalid filename '{name}'"))?;
+            let path = dir.join(&fname);
+            if !path.exists() {
+                let avail = available_lss(&dir);
+                if avail.is_empty() {
+                    bail!("file not found: {fname}");
+                }
+                bail!("file not found: {fname} (available: {})", avail.join(", "));
+            }
+            path
+        }
+    };
+    let basename = chosen.file_name().map_or_else(
+        || chosen.display().to_string(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    let track = load_from_file(&chosen)?;
+    Ok((track, basename))
+}
+
+/// Sorted `.lss` basenames in `dir`, for the "available:" hint on a
+/// failed named load. Empty when the directory is missing/unreadable.
+fn available_lss(dir: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) == Some("lss") {
+                p.file_name().map(|n| n.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// Reject a user-supplied load filename that escapes the track dir, and
+/// append `.lss` when missing. Returns `None` if the name contains any
+/// path component beyond a single file name (`/`, `\`, `..`, `.`, an
+/// absolute path).
+fn normalize_lss_filename(name: &str) -> Option<String> {
+    if name.is_empty() || name.contains('/') || name.contains('\\') {
+        return None;
+    }
+    // After ruling out separators, the name must still be exactly its
+    // own final component -- `Path::file_name` is `None` for `.`/`..`,
+    // catching those traversal forms on every platform.
+    if Path::new(name).file_name().and_then(|n| n.to_str()) != Some(name) {
+        return None;
+    }
+    if name.to_ascii_lowercase().ends_with(".lss") {
+        Some(name.to_owned())
+    } else {
+        Some(format!("{name}.lss"))
     }
 }
 

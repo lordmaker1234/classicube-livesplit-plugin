@@ -346,11 +346,12 @@ pub fn reset_run() {
     with_state(SplitsState::rearm);
 }
 
-/// Tell a connected timer to reset after a structural edit aborted an
-/// in-progress run. The mutation already re-armed local state; this
-/// just keeps the timer in sync. Silent + no-op when nothing was
-/// running or no timer is attached (the editor is usable offline).
-fn editor_reset_timer_if_was_running(was_in_progress: bool) {
+/// Tell a connected timer to reset after a load / structural edit
+/// aborted an in-progress run. The caller already re-armed local state
+/// (a fresh `load_track`, or an editor mutation); this just keeps the
+/// timer in sync. Silent + no-op when nothing was running or no timer
+/// is attached (the plugin is usable offline).
+pub fn reset_timer_if_was_running(was_in_progress: bool) {
     if was_in_progress && livesplit::any_connected() {
         livesplit::send(Command::Reset { save_attempt: None });
         chat_print("&eLiveSplit: run reset to allow edit");
@@ -374,7 +375,7 @@ pub fn editor_insert(aabb: Aabb, label: String, target: Option<usize>) -> Option
             None
         }
         Some(Ok(idx)) => {
-            editor_reset_timer_if_was_running(was_in_progress);
+            reset_timer_if_was_running(was_in_progress);
             chat_print(&format!("&aLiveSplit: added checkpoint #{idx}"));
             Some(idx)
         }
@@ -396,7 +397,7 @@ pub fn editor_delete(i: usize) -> bool {
             false
         }
         Some(Ok(())) => {
-            editor_reset_timer_if_was_running(was_in_progress);
+            reset_timer_if_was_running(was_in_progress);
             chat_print(&format!("&aLiveSplit: deleted checkpoint #{i}"));
             true
         }
