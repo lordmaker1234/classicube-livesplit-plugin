@@ -45,16 +45,15 @@ fn unique_tmp_dir(prefix: &str) -> std::path::PathBuf {
 fn build_lss_xml_roundtrips_canonical_payload() {
     let t = sample_track();
     let canonical = payload::serialize_canonical(&t).unwrap();
-    let canonical_str = std::str::from_utf8(&canonical).unwrap();
 
-    let xml = build_lss_xml(&t, "MyServer", canonical_str).unwrap();
+    let xml = build_lss_xml(&t, "MyServer", &payload::encode_var(&canonical)).unwrap();
     let run = parse(&xml).expect("re-parse");
 
     let stored = run
         .metadata()
         .custom_variable_value(CUSTOM_VAR_NAME)
         .expect("ClassiCubeTrack present");
-    assert_eq!(stored.as_bytes(), canonical.as_slice());
+    assert_eq!(payload::decode_var(stored).unwrap(), canonical);
 
     // The Start checkpoint is the timer-side run-start action, not a
     // named split, so it's omitted from the segment list -- only "end"
@@ -71,16 +70,15 @@ fn build_lss_xml_roundtrips_canonical_payload() {
 fn build_lss_xml_round_trips_through_into_track() {
     let t = sample_track(); // [Start "start", End "end"]
     let canonical = payload::serialize_canonical(&t).unwrap();
-    let canonical_str = std::str::from_utf8(&canonical).unwrap();
 
-    let xml = build_lss_xml(&t, "Srv", canonical_str).unwrap();
+    let xml = build_lss_xml(&t, "Srv", &payload::encode_var(&canonical)).unwrap();
     let run = parse(&xml).expect("re-parse");
 
     let stored = run
         .metadata()
         .custom_variable_value(CUSTOM_VAR_NAME)
         .expect("ClassiCubeTrack present");
-    let payload = payload::parse(stored.as_bytes()).unwrap();
+    let payload = payload::parse(&payload::decode_var(stored).unwrap()).unwrap();
     let labels: Vec<String> = run.segments().iter().map(|s| s.name().to_owned()).collect();
     let back = payload::into_track(payload, labels).unwrap();
 
@@ -98,9 +96,8 @@ fn build_lss_xml_strips_color_codes_from_display() {
     let mut t = sample_track();
     t.name = "&aany%".to_owned();
     let canonical = payload::serialize_canonical(&t).unwrap();
-    let canonical_str = std::str::from_utf8(&canonical).unwrap();
 
-    let xml = build_lss_xml(&t, "&cMy&eServer", canonical_str).unwrap();
+    let xml = build_lss_xml(&t, "&cMy&eServer", &payload::encode_var(&canonical)).unwrap();
     let run = parse(&xml).unwrap();
     let cat = run.category_name();
     assert!(

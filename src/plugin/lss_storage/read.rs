@@ -200,7 +200,8 @@ fn load_from_file(path: &Path) -> Result<Track> {
     let Some(value) = run.metadata().custom_variable_value(CUSTOM_VAR_NAME) else {
         bail!("no ClassiCubeTrack custom variable");
     };
-    let payload = payload::parse(value.as_bytes()).context("parsing ClassiCubeTrack payload")?;
+    let bytes = payload::decode_var(value).context("base64-decoding ClassiCubeTrack payload")?;
+    let payload = payload::parse(&bytes).context("parsing ClassiCubeTrack payload")?;
 
     let labels = labels_from(&run);
     payload::into_track(payload, labels).context("building Track from payload")

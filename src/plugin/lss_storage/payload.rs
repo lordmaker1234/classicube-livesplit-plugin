@@ -2,6 +2,7 @@
 mod tests;
 
 use anyhow::{Result, bail, ensure};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 
 use crate::plugin::splits::geometry::{
@@ -164,6 +165,24 @@ pub fn parse(bytes: &[u8]) -> Result<Payload> {
         );
     }
     Ok(payload)
+}
+
+/// Encode the canonical payload bytes into the ASCII string stored in the
+/// `<Variable name="ClassiCubeTrack">` text node. Base64 has no whitespace,
+/// so an XML pretty-printer has nothing to reflow -- the payload can never
+/// be corrupted the way a raw-JSON text node can (a formatter word-wrapping
+/// the long line at a space inside the track name injects a newline that's
+/// illegal inside a JSON string).
+pub fn encode_var(canonical: &[u8]) -> String {
+    STANDARD.encode(canonical)
+}
+
+/// Decode the stored variable value back into canonical payload bytes.
+/// Strips any ASCII whitespace first, so a value that *was* line-wrapped by
+/// a formatter still decodes cleanly.
+pub fn decode_var(value: &str) -> Result<Vec<u8>> {
+    let cleaned: String = value.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    Ok(STANDARD.decode(cleaned)?)
 }
 
 /// Default label for the Start checkpoint, which has no `<Segment>` of

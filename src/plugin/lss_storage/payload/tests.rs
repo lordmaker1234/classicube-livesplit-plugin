@@ -200,6 +200,32 @@ fn into_track_substitutes_placeholder_for_empty_label() {
 }
 
 #[test]
+fn var_round_trips() {
+    let t = sample_track();
+    let bytes = serialize_canonical(&t).unwrap();
+    let encoded = encode_var(&bytes);
+    assert_eq!(decode_var(&encoded).unwrap(), bytes);
+}
+
+#[test]
+fn decode_var_ignores_whitespace() {
+    // Simulate an XML formatter reflowing the base64 value across lines:
+    // splice newlines and spaces into the middle. It must still decode to
+    // the original canonical bytes.
+    let t = sample_track();
+    let bytes = serialize_canonical(&t).unwrap();
+    let encoded = encode_var(&bytes);
+    let mid = encoded.len() / 2;
+    let wrapped = format!("{}\n        {}", &encoded[..mid], &encoded[mid..]);
+    assert_eq!(decode_var(&wrapped).unwrap(), bytes);
+}
+
+#[test]
+fn decode_var_rejects_garbage() {
+    assert!(decode_var("!! not base64 !!").is_err());
+}
+
+#[test]
 fn into_track_rejects_label_count_mismatch() {
     let t = sample_track(); // 3 checkpoints -> expects 2 segment labels.
     let bytes = serialize_canonical(&t).unwrap();

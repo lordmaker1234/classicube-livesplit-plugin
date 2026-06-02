@@ -83,9 +83,8 @@ pub(super) fn save_track_to(
     let final_path = dir.join(format!("{category}-v{next_version}.lss"));
     let tmp_path = dir.join(format!("{category}-v{next_version}.lss.tmp"));
 
-    let canonical_str =
-        std::str::from_utf8(&canonical).context("canonical payload is not valid UTF-8")?;
-    let xml = build_lss_xml(track, server_display, canonical_str)?;
+    let encoded = payload::encode_var(&canonical);
+    let xml = build_lss_xml(track, server_display, &encoded)?;
 
     fs::write(&tmp_path, xml.as_bytes())
         .with_context(|| format!("writing {}", tmp_path.display()))?;
@@ -123,10 +122,20 @@ fn same_as_latest(path: &Path, canonical: &[u8]) -> Result<bool> {
         .metadata()
         .custom_variable_value(CUSTOM_VAR_NAME)
         .unwrap_or("");
-    Ok(stored.as_bytes() == canonical)
+    // The dedup key is the canonical JSON bytes, not the base64 transport
+    // form. Decode the stored value back; a decode failure (corrupt /
+    // legacy raw-JSON value) falls through to "write a new version", the
+    // same graceful behavior as a parse failure above.
+    match payload::decode_var(stored) {
+        Ok(decoded) => Ok(decoded == canonical),
+        Err(e) => {
+            debug!(?path, error = ?e, "could not base64-decode stored payload; will write new");
+            Ok(false)
+        }
+    }
 }
 
-fn build_lss_xml(track: &Track, server_display: &str, canonical_json: &str) -> Result<String> {
+fn build_lss_xml(track: &Track, server_display: &str, encoded: &str) -> Result<String> {
     let mut run = Run::new();
     run.set_game_name("ClassiCube");
 
@@ -144,10 +153,13 @@ fn build_lss_xml(track: &Track, server_display: &str, canonical_json: &str) -> R
         run.push_segment(Segment::new(cp.label.as_str()));
     }
 
+    // `encoded` is the base64 transport form of the canonical payload
+    // bytes. Storing base64 (not raw JSON) keeps the text node free of any
+    // whitespace an external XML formatter could reflow into the value.
     run.metadata_mut()
         .custom_variable_mut(CUSTOM_VAR_NAME)
         .permanent()
-        .set_value(canonical_json);
+        .set_value(encoded);
 
     let mut xml = String::new();
     save_run(&run, &mut xml).map_err(|e| anyhow!("saving Run to XML: {e}"))?;
