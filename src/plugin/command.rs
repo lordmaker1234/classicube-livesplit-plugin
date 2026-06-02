@@ -46,6 +46,7 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit undosplit | skipsplit");
     chat_print("&e  /client LiveSplit loadtest | splits | clear | save");
     chat_print("&e  /client LiveSplit load [filename]   (newest, or a specific .lss)");
+    chat_print("&e  /client LiveSplit open               (reveal the loaded track file)");
     chat_print("&e  /client LiveSplit show [on|off]    (toggle checkpoint HUD)");
     chat_print("&e  /client LiveSplit edit on|off");
     chat_print("&e  /client LiveSplit edit place [i] | cancel | select <i>");
@@ -206,6 +207,7 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         ["save"] => lss_storage::save_current_track(),
         ["load"] => lss_storage::load_track_command(None),
         ["load", name] => lss_storage::load_track_command(Some((*name).to_owned())),
+        ["open"] => lss_storage::open_track_location(),
         ["show"] => {
             let on = hud::toggle_show();
             chat_print(if on {
@@ -322,6 +324,7 @@ impl CommandModule {
                     "&a/client LiveSplit undosplit | skipsplit",
                     "&a/client LiveSplit loadtest | splits | clear | save",
                     "&a/client LiveSplit load [filename]",
+                    "&a/client LiveSplit open",
                     "&a/client LiveSplit show [on|off]",
                     "&a/client LiveSplit edit on|off | place [i] | cancel | select <i>",
                     "&a/client LiveSplit edit delete [i] | move <from> <to>",

@@ -1,7 +1,11 @@
 #[cfg(test)]
 mod tests;
 
-use std::{fs, path::Path, time::SystemTime};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use classicube_helpers::async_manager;
@@ -28,7 +32,7 @@ pub async fn try_autoload(server: String, map: String) {
         Ok(None) => {
             debug!("autoload: no track files for ({server}, {map})");
         }
-        Ok(Some(track)) => {
+        Ok(Some((track, path))) => {
             async_manager::spawn_on_main_thread(async move {
                 // Re-check on the main thread: the disk read + thread
                 // hop is a sub-second window in which the player can
@@ -42,7 +46,9 @@ pub async fn try_autoload(server: String, map: String) {
                 // `false` means the plugin is mid-teardown
                 // (`SplitsState::load` returned `None` because `STATE`
                 // was cleared); nothing actionable beyond logging.
-                if !splits::load_track(track, "disk") {
+                if splits::load_track(track, "disk") {
+                    super::set_loaded_path(path);
+                } else {
                     debug!("autoload: load_track returned false (plugin mid-teardown)");
                 }
             });
@@ -62,12 +68,13 @@ pub async fn try_autoload(server: String, map: String) {
 /// doesn't keep running against stale segments.
 pub async fn load_command(server: String, map: String, filename: Option<String>) {
     match resolve_for_load(&server, &map, filename.as_deref()) {
-        Ok((track, source)) => {
+        Ok((track, source, path)) => {
             async_manager::spawn_on_main_thread(async move {
                 let was_in_progress = splits::run_in_progress();
                 // `false` => plugin mid-teardown (`SplitsState::load`
                 // returned `None`); nothing loaded, nothing to reset.
                 if splits::load_track(track, &source) {
+                    super::set_loaded_path(path);
                     splits::reset_timer_if_was_running(was_in_progress);
                 }
             });
@@ -77,9 +84,15 @@ pub async fn load_command(server: String, map: String, filename: Option<String>)
 }
 
 /// Resolve the file to load and parse it into a `Track`. Returns the
-/// track plus its file basename (used as the `source` label in the
-/// `load_track` success chat line). Errors carry a user-facing message.
-fn resolve_for_load(server: &str, map: &str, filename: Option<&str>) -> Result<(Track, String)> {
+/// track, its file basename (used as the `source` label in the
+/// `load_track` success chat line), and the chosen file path (remembered
+/// via `set_loaded_path` so `/client LiveSplit open` can reveal it).
+/// Errors carry a user-facing message.
+fn resolve_for_load(
+    server: &str,
+    map: &str,
+    filename: Option<&str>,
+) -> Result<(Track, String, PathBuf)> {
     let dir = path::track_dir(server, map);
     let chosen = match filename {
         None => newest_lss(&dir)?
@@ -103,7 +116,7 @@ fn resolve_for_load(server: &str, map: &str, filename: Option<&str>) -> Result<(
         |n| n.to_string_lossy().into_owned(),
     );
     let track = load_from_file(&chosen)?;
-    Ok((track, basename))
+    Ok((track, basename, chosen))
 }
 
 /// Sorted `.lss` basenames in `dir`, for the "available:" hint on a
@@ -148,7 +161,7 @@ fn normalize_lss_filename(name: &str) -> Option<String> {
     }
 }
 
-fn try_autoload_inner(server: &str, map: &str) -> Result<Option<Track>> {
+fn try_autoload_inner(server: &str, map: &str) -> Result<Option<(Track, PathBuf)>> {
     let dir = path::track_dir(server, map);
     if !dir.exists() {
         return Ok(None);
@@ -161,7 +174,7 @@ fn try_autoload_inner(server: &str, map: &str) -> Result<Option<Track>> {
     match load_from_file(&newest) {
         Ok(track) => {
             info!(path = %newest.display(), "auto-loaded track from disk");
-            Ok(Some(track))
+            Ok(Some((track, newest)))
         }
         Err(e) => {
             let basename = newest.file_name().map_or_else(
@@ -174,9 +187,9 @@ fn try_autoload_inner(server: &str, map: &str) -> Result<Option<Track>> {
     }
 }
 
-fn newest_lss(dir: &Path) -> Result<Option<std::path::PathBuf>> {
+fn newest_lss(dir: &Path) -> Result<Option<PathBuf>> {
     let entries = fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))?;
-    let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
+    let mut best: Option<(SystemTime, PathBuf)> = None;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("lss") {

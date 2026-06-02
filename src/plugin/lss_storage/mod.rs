@@ -3,17 +3,46 @@ pub mod payload;
 pub mod read;
 pub mod write;
 
+use std::{cell::RefCell, path::PathBuf};
+
 use classicube_helpers::{async_manager, tick::TickEventHandler};
 use classicube_sys::Server;
 use tracing::debug;
 
 use crate::{
+    chat::chat_print_async,
     chat_print,
     plugin::{
         module::Module,
         splits::{self, geometry::Track},
     },
 };
+
+thread_local! {
+    /// Path of the `.lss` file the currently loaded track was read from,
+    /// relative to the working dir (e.g.
+    /// `plugins/livesplit/<server>/<map>/<category>-vN.lss`). `None` when
+    /// the track came from the chat protocol / the `loadtest` fixture, or
+    /// when no track is loaded. Read by `/client LiveSplit open` to reveal
+    /// the exact file in the OS file manager.
+    static LOADED_LSS_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Remember the file the just-loaded track came from. Called by the
+/// disk-read paths (`read::try_autoload` / `read::load_command`) *after*
+/// a successful `splits::load_track`, so it overwrites the clear that
+/// `on_track_loaded` performed synchronously inside that same call.
+pub(super) fn set_loaded_path(path: PathBuf) {
+    LOADED_LSS_PATH.with_borrow_mut(|p| *p = Some(path));
+}
+
+fn loaded_path() -> Option<PathBuf> {
+    LOADED_LSS_PATH.with_borrow(Clone::clone)
+}
+
+fn clear_loaded_path() {
+    LOADED_LSS_PATH.with_borrow_mut(|p| *p = None);
+}
 
 pub struct LssStorageModule {
     // Owned for its Drop side-effect: TickEventHandler::Drop unregisters
@@ -60,11 +89,18 @@ impl LssStorageModule {
 impl Module for LssStorageModule {
     fn free(&mut self) {
         splits::clear_load_callback();
+        clear_loaded_path();
         debug!("LssStorageModule freed; load callback cleared");
     }
 }
 
 fn on_track_loaded(track: &Track, starting_map: Option<&str>) {
+    // A track just loaded from *some* source. Forget any remembered
+    // `.lss` path: the disk-read paths re-set it right after this returns
+    // (`set_loaded_path`), while chat / fixture loads leave it `None` so
+    // `/client LiveSplit open` falls back to the track directory.
+    clear_loaded_path();
+
     let Some(server) = current_server_display() else {
         debug!("save skipped: no server name");
         return;
@@ -117,6 +153,71 @@ pub fn load_track_command(filename: Option<String>) {
         return;
     };
     async_manager::spawn(read::load_command(server, map, filename));
+}
+
+/// Open the OS file manager for the currently loaded track
+/// (`/client LiveSplit open`). When the track was loaded from a `.lss`
+/// file, reveals that exact file (selected) in its containing folder;
+/// otherwise (chat / fixture load, or the file has since moved) opens
+/// the track's `(server, starting_map)` directory. Path resolution runs
+/// here on the main thread (engine globals + splits `STATE`); the actual
+/// `opener` call is spawned to a task because the Linux DBus path can
+/// block. Not gated on `require_connected()` -- this is local file state.
+pub fn open_track_location() {
+    if splits::current_track().is_none() {
+        chat_print("&cLiveSplit: no track loaded");
+        return;
+    }
+
+    let cwd = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            chat_print(&format!("&cLiveSplit: cannot resolve working dir: {e}"));
+            return;
+        }
+    };
+
+    // Prefer revealing the exact file the current track was loaded from.
+    // Build the absolute path via `current_dir().join` rather than
+    // `fs::canonicalize`: on Windows the latter yields a `\\?\` UNC path
+    // that `explorer /select,` mishandles (`opener` normalizes a plain
+    // absolute path itself).
+    if let Some(rel) = loaded_path() {
+        let abs = cwd.join(rel);
+        if abs.is_file() {
+            chat_print(&format!("&aLiveSplit: opening {}", abs.display()));
+            async_manager::spawn(async move {
+                if let Err(e) = opener::reveal(&abs) {
+                    chat_print_async(format!("&cLiveSplit: failed to open file manager: {e}"));
+                }
+            });
+            return;
+        }
+    }
+
+    // Fallback: open the track's directory. Files under
+    // `(server, starting_map)` -- the same scope `/client LiveSplit save`
+    // writes to (the chat-load autosave in `on_track_loaded` already
+    // created it for a chat-sourced track).
+    let Some(server) = current_server_display() else {
+        chat_print("&cLiveSplit: cannot resolve server name");
+        return;
+    };
+    let Some(map) = splits::starting_map() else {
+        chat_print("&cLiveSplit: no starting map for this track");
+        return;
+    };
+    let dir = cwd.join(path::track_dir(&server, &map));
+    if !dir.is_dir() {
+        chat_print("&cLiveSplit: track not saved to disk yet (run /client LiveSplit save)");
+        return;
+    }
+    chat_print(&format!("&aLiveSplit: opening {}", dir.display()));
+    async_manager::spawn(async move {
+        if let Err(e) = opener::open(&dir) {
+            chat_print_async(format!("&cLiveSplit: failed to open folder: {e}"));
+        }
+    });
 }
 
 /// Resolve the unsanitized display server name. Returns
