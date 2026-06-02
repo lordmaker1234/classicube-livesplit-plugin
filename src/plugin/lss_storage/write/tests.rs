@@ -117,7 +117,8 @@ fn track_name_with_color_code_round_trips_through_payload() {
     let mut t = sample_track();
     t.name = "&aany%".to_owned();
     let canonical = payload::serialize_canonical(&t).unwrap();
-    assert!(canonical.starts_with("LS title &aany%"));
+    assert!(canonical.starts_with("LS v1\n"));
+    assert!(canonical.contains("LS title &aany%"));
 
     let xml = build_lss_xml(&t, "Srv", &canonical).unwrap();
     let run = parse(&xml).expect("re-parse");

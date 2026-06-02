@@ -5,9 +5,12 @@ use std::{cell::RefCell, mem};
 
 use anyhow::{Result, anyhow, bail, ensure};
 
-use crate::plugin::splits::geometry::{
-    Aabb, Checkpoint, CheckpointKind, Track, Trigger, aabb_from_min_size,
-    validate_pause_resume_pairing,
+use crate::plugin::{
+    splits::geometry::{
+        Aabb, Checkpoint, CheckpointKind, Track, Trigger, aabb_from_min_size,
+        validate_pause_resume_pairing,
+    },
+    track_source::encode::LS_FORMAT_VERSION,
 };
 
 /// Result of feeding a single chat line to the receiver.
@@ -28,6 +31,9 @@ pub enum FrameOutcome {
 #[derive(Debug)]
 enum State {
     Idle,
+    /// `LS v<n>` accepted (version matched); next valid line is
+    /// `LS title <name>`.
+    NeedTitle,
     /// `LS title` accepted; next valid line is `cp` or `map` (which
     /// becomes the Start-kind checkpoint).
     NeedFirst {
@@ -103,7 +109,13 @@ fn classify_line(text: &str) -> Option<Result<Line, String>> {
             label,
         }),
         "end" => parse_end(rest),
-        other => Err(format!("unknown keyword `{other}`")),
+        // The version keyword is the token `v<digits>` (`v1`, `v2`, …);
+        // the number rides in the keyword itself, not `rest`.
+        other => match other.strip_prefix('v').and_then(|d| d.parse::<u32>().ok()) {
+            Some(version) if rest.is_empty() => Ok(Line::Version { version }),
+            Some(_) => Err(format!("`LS {other}` takes no arguments, got `{rest}`")),
+            None => Err(format!("unknown keyword `{other}`")),
+        },
     };
 
     Some(parsed)
@@ -135,12 +147,16 @@ pub fn feed_chat_line(text: &str) -> FrameOutcome {
 /// whitespace (formatter indentation) are stripped per line and blank
 /// lines are skipped. An inline label on a checkpoint line is ignored;
 /// a standalone `LS label` line is a parse error (labels don't belong in
-/// the geometry payload). Requires `LS title`, `LS end`, and at least 2
+/// the geometry payload). Requires a leading `LS v<n>` version line
+/// matching this build's [`LS_FORMAT_VERSION`] (a missing or mismatched
+/// version is rejected -- pre-version files fail here and regenerate on
+/// the next save), then `LS title`, `LS end`, and at least 2
 /// checkpoints, then runs [`validate_pause_resume_pairing`]. Position
 /// implies kind: the first checkpoint becomes `Start`, `LS end` promotes
 /// the last `Split` to `End` (Pause/Resume can't be last), and a leading
 /// `LS pause` / `LS unpause` is rejected.
 pub fn decode_geometry(text: &str) -> Result<Track> {
+    let mut version_seen = false;
     let mut name: Option<String> = None;
     let mut checkpoints: Vec<Checkpoint> = Vec::new();
     let mut ended = false;
@@ -158,7 +174,24 @@ pub fn decode_geometry(text: &str) -> Result<Track> {
         ensure!(!ended, "content after `LS end`");
 
         match parsed {
+            Line::Version { version } => {
+                ensure!(!version_seen, "duplicate `LS v<n>` version line");
+                ensure!(
+                    name.is_none() && checkpoints.is_empty(),
+                    "`LS v<n>` version line must come first"
+                );
+                ensure!(
+                    version == LS_FORMAT_VERSION,
+                    "unsupported LS format version {version}; this build speaks \
+                     v{LS_FORMAT_VERSION}"
+                );
+                version_seen = true;
+            }
             Line::Title { name: t } => {
+                ensure!(
+                    version_seen,
+                    "missing `LS v<n>` version line before `LS title`"
+                );
                 ensure!(name.is_none(), "duplicate `LS title` line");
                 ensure!(checkpoints.is_empty(), "`LS title` after a checkpoint");
                 name = Some(t);
@@ -231,6 +264,11 @@ pub fn decode_geometry(text: &str) -> Result<Track> {
 }
 
 enum Line {
+    /// `LS v<n>` — the leading format-version line. The reset anchor on
+    /// the chat transport; the first required line on disk.
+    Version {
+        version: u32,
+    },
     Title {
         name: String,
     },
@@ -365,15 +403,30 @@ fn parse_u8_triple(s: &str) -> Result<[u8; 3], String> {
 }
 
 fn transition(state: &mut State, line: Line) -> FrameOutcome {
-    // `LS title` is the universal reset from any state.
-    if let Line::Title { name } = line {
-        *state = State::NeedFirst { name };
+    // `LS v<n>` is the universal reset / re-sync anchor from any state:
+    // every broadcast leads with it, so receiving one mid-parse cleanly
+    // restarts the track. A mismatched version drops to `Idle` with a
+    // clear diagnostic instead of risking a silent misparse.
+    if let Line::Version { version } = line {
+        if version != LS_FORMAT_VERSION {
+            *state = State::Idle;
+            return FrameOutcome::ParseError(format!(
+                "unsupported LS format version {version}; this build speaks v{LS_FORMAT_VERSION}"
+            ));
+        }
+        *state = State::NeedTitle;
         return FrameOutcome::Buffered;
     }
 
     let taken = mem::replace(state, State::Idle);
 
     match (taken, line) {
+        // `LS title` is valid only immediately after the version line.
+        (State::NeedTitle, Line::Title { name }) => {
+            *state = State::NeedFirst { name };
+            FrameOutcome::Buffered
+        }
+
         // First checkpoint is always Start, regardless of the line's
         // declared kind. Pause/Resume kinds on the first line are
         // refused (the kind reported on the line came from the keyword,
@@ -462,12 +515,36 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
         }
 
         // --- ParseError fall-throughs ---
+        // Nothing is valid before the leading version line.
         (
             taken @ State::Idle,
+            Line::Title { .. }
+            | Line::Aabb { .. }
+            | Line::Map { .. }
+            | Line::End
+            | Line::Label { .. },
+        ) => {
+            *state = taken;
+            FrameOutcome::ParseError("no `LS v<n>` version line yet".to_string())
+        }
+        // After the version line, only `LS title` is valid.
+        (
+            taken @ State::NeedTitle,
             Line::Aabb { .. } | Line::Map { .. } | Line::End | Line::Label { .. },
         ) => {
             *state = taken;
-            FrameOutcome::ParseError("no `LS title` yet".to_string())
+            FrameOutcome::ParseError("expected `LS title` after `LS v<n>`".to_string())
+        }
+        // A second `LS title` mid-track is no longer a reset (the version
+        // line is); reject it so a stray title can't silently truncate.
+        (
+            taken @ (State::NeedFirst { .. } | State::NeedNext { .. } | State::NeedLabel { .. }),
+            Line::Title { .. },
+        ) => {
+            *state = taken;
+            FrameOutcome::ParseError(
+                "unexpected `LS title`; a new track must start with `LS v<n>`".to_string(),
+            )
         }
         (taken @ State::NeedFirst { .. }, Line::End) => {
             *state = taken;
@@ -486,8 +563,8 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
             FrameOutcome::ParseError("checkpoint already has a label".to_string())
         }
 
-        // Title was handled above.
-        (_, Line::Title { .. }) => unreachable!("title handled above"),
+        // Version was handled above.
+        (_, Line::Version { .. }) => unreachable!("version handled above"),
     }
 }
 

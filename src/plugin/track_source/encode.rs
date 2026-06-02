@@ -15,13 +15,21 @@ use crate::plugin::splits::geometry::{
 /// the receive side.
 pub(crate) const MAX_LINE_CP: usize = 64 - 3;
 
+/// Current on-wire `LS …` grammar version, emitted as the leading
+/// `LS v<n>` line on both transports (chat broadcast + `.lss` disk
+/// payload). Bump on any breaking grammar change (new keyword, coord
+/// encoding, field order). Readers reject any other value with an
+/// "unsupported version" diagnostic instead of risking a silent misparse.
+pub(crate) const LS_FORMAT_VERSION: u32 = 1;
+
 /// Encode a `Track` into a series of `LS …` chat lines. The caller is
 /// responsible for emitting them — one per `/mb sign` block, or chained
 /// into a single block via the `mb` arm of the command module.
 ///
 /// Layout:
-///   line[0]    = `LS title <name>`
-///   line[1..n] = per checkpoint, in order. Each checkpoint emits one
+///   line[0]    = `LS v<n>` (format version; the receiver's reset anchor)
+///   line[1]    = `LS title <name>`
+///   line[2..n] = per checkpoint, in order. Each checkpoint emits one
 ///                of four keyword lines:
 ///                  `LS cp <min> <size> [label]`      (Split, AABB)
 ///                  `LS map <name> [label]`           (Split, MapLoaded)
@@ -109,7 +117,12 @@ fn encode_lines(track: &Track, emit_labels: bool) -> Result<Vec<String>> {
 
     validate_pause_resume_pairing(track)?;
 
-    let mut lines = Vec::with_capacity(2 + n);
+    let mut lines = Vec::with_capacity(3 + n);
+
+    // Leading version line, ahead of `LS title`. On the chat transport
+    // this is the universal reset/re-sync anchor; on disk it gates the
+    // batch decoder. Always emitted; the cap-check loop below covers it.
+    lines.push(format!("LS v{LS_FORMAT_VERSION}"));
 
     let title = format!("LS title {}", track.name);
     let title_cp = title.chars().count();

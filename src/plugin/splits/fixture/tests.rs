@@ -59,6 +59,7 @@ fn loadtest_encodes_to_expected_wire_form() {
     assert_eq!(
         lines,
         vec![
+            "LS v1",
             "LS title Load Test",
             "LS cp 0,0,0 2,4,2 Start",
             "LS cp 10,0,0 2,4,2 1 Split A",

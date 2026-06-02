@@ -24,6 +24,13 @@ fn fresh() -> std::sync::MutexGuard<'static, ()> {
     g
 }
 
+/// Feed the leading `LS v1` version line, asserting it buffers. Every
+/// well-formed stream opens with it (it's the reset anchor), so the
+/// hand-fed tests below call this before their first `LS title`.
+fn feed_version() {
+    assert_buffered(feed_chat_line("LS v1"));
+}
+
 fn aabb(min: (f32, f32, f32), max: (f32, f32, f32)) -> Aabb {
     Aabb {
         min: Vec3::new(min.0, min.1, min.2),
@@ -135,6 +142,7 @@ fn colored_title_is_accepted() {
     // single `&7` (or whatever the server's default color) preceding
     // the frame. MCGalaxy collapses runs of codes to one before
     // broadcast, so we only strip one.
+    assert_buffered(feed_chat_line("&7LS v1"));
     assert_buffered(feed_chat_line("&7LS title loadtest"));
 }
 
@@ -171,22 +179,23 @@ fn unknown_keyword_errors() {
 }
 
 #[test]
-fn cp_before_title_errors() {
+fn cp_before_version_errors() {
     let _g = fresh();
     let m = assert_parse_error(feed_chat_line("LS cp 0,0,0 1,1,1 label"));
-    assert!(m.contains("no `LS title`"), "{m}");
+    assert!(m.contains("version line"), "{m}");
 }
 
 #[test]
-fn end_before_title_errors() {
+fn end_before_version_errors() {
     let _g = fresh();
     let m = assert_parse_error(feed_chat_line("LS end"));
-    assert!(m.contains("no `LS title`"), "{m}");
+    assert!(m.contains("version line"), "{m}");
 }
 
 #[test]
 fn cp_in_need_label_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1")); // no inline label
     let m = assert_parse_error(feed_chat_line("LS cp 10,0,0 1,1,1 mid"));
@@ -196,6 +205,7 @@ fn cp_in_need_label_errors() {
 #[test]
 fn end_in_need_label_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1"));
     let m = assert_parse_error(feed_chat_line("LS end"));
@@ -206,12 +216,13 @@ fn end_in_need_label_errors() {
 fn label_in_idle_errors() {
     let _g = fresh();
     let m = assert_parse_error(feed_chat_line("LS label some text"));
-    assert!(m.contains("no `LS title`"), "{m}");
+    assert!(m.contains("version line"), "{m}");
 }
 
 #[test]
 fn label_in_need_first_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     let m = assert_parse_error(feed_chat_line("LS label premature"));
     assert!(m.contains("no checkpoint to label"), "{m}");
@@ -220,6 +231,7 @@ fn label_in_need_first_errors() {
 #[test]
 fn label_after_inline_label_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1 inline"));
     let m = assert_parse_error(feed_chat_line("LS label extra"));
@@ -243,6 +255,7 @@ fn empty_title_name_no_space_errors() {
 #[test]
 fn whitespace_inline_label_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     // Trailing space after size triple, then empty (all-whitespace) label.
     let m = assert_parse_error(feed_chat_line("LS cp 100,64,200 1,1,1 "));
@@ -252,6 +265,7 @@ fn whitespace_inline_label_errors() {
 #[test]
 fn whitespace_only_label_text_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1"));
     let m = assert_parse_error(feed_chat_line("LS label    "));
@@ -261,6 +275,7 @@ fn whitespace_only_label_text_errors() {
 #[test]
 fn non_numeric_coord_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     let m = assert_parse_error(feed_chat_line("LS cp abc,def,ghi 1,1,1"));
     assert!(m.contains("min"), "{m}");
@@ -269,6 +284,7 @@ fn non_numeric_coord_errors() {
 #[test]
 fn wrong_size_arity_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     let m = assert_parse_error(feed_chat_line("LS cp 100,64,200 4,4"));
     assert!(m.contains("3 comma-separated size"), "{m}");
@@ -277,6 +293,7 @@ fn wrong_size_arity_errors() {
 #[test]
 fn wrong_min_arity_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     let m = assert_parse_error(feed_chat_line("LS cp 100,64,200,extra 4,4,4"));
     assert!(m.contains("3 comma-separated min"), "{m}");
@@ -285,6 +302,7 @@ fn wrong_min_arity_errors() {
 #[test]
 fn missing_comma_wrong_shape_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     // splitn(3, ' ') sees ["100", "64", "200 4 4 4"] → min parse fails arity.
     let m = assert_parse_error(feed_chat_line("LS cp 100 64 200 4 4 4"));
@@ -294,6 +312,7 @@ fn missing_comma_wrong_shape_errors() {
 #[test]
 fn size_exceeds_u8_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     let m = assert_parse_error(feed_chat_line("LS cp 100,64,200 4,4,300"));
     assert!(m.contains("size"), "{m}");
@@ -302,6 +321,7 @@ fn size_exceeds_u8_errors() {
 #[test]
 fn end_in_need_first_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     let m = assert_parse_error(feed_chat_line("LS end"));
     assert!(m.contains("no checkpoints before `LS end`"), "{m}");
@@ -310,6 +330,7 @@ fn end_in_need_first_errors() {
 #[test]
 fn end_with_one_checkpoint_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1 only"));
     let m = assert_parse_error(feed_chat_line("LS end"));
@@ -319,6 +340,7 @@ fn end_with_one_checkpoint_errors() {
 #[test]
 fn end_with_trailing_args_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     let m = assert_parse_error(feed_chat_line("LS end stuff"));
     assert!(m.contains("takes no arguments"), "{m}");
@@ -327,14 +349,16 @@ fn end_with_trailing_args_errors() {
 // ---- Buffered ----
 
 #[test]
-fn title_alone_buffers() {
+fn version_then_title_buffers() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title my track"));
 }
 
 #[test]
 fn title_then_cp_inline_buffers() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 start"));
 }
@@ -342,6 +366,7 @@ fn title_then_cp_inline_buffers() {
 #[test]
 fn title_then_cp_no_label_buffers() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2"));
 }
@@ -349,6 +374,7 @@ fn title_then_cp_no_label_buffers() {
 #[test]
 fn title_then_cp_then_label_buffers() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2"));
     assert_buffered(feed_chat_line("LS label start"));
@@ -357,11 +383,52 @@ fn title_then_cp_then_label_buffers() {
 #[test]
 fn title_then_cp_chain_mixed_label_forms_buffer() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 start"));
     assert_buffered(feed_chat_line("LS cp 10,0,0 2,4,2"));
     assert_buffered(feed_chat_line("LS label split 1"));
     assert_buffered(feed_chat_line("LS cp 20,0,0 2,4,2 split 2"));
+}
+
+// ---- version line ----
+
+#[test]
+fn version_line_buffers() {
+    let _g = fresh();
+    assert_buffered(feed_chat_line("LS v1"));
+}
+
+#[test]
+fn title_without_version_errors() {
+    let _g = fresh();
+    // Strict: a stream that opens with `LS title` (no version line) is
+    // rejected -- the leading `LS v<n>` is mandatory.
+    let m = assert_parse_error(feed_chat_line("LS title T"));
+    assert!(m.contains("version line"), "{m}");
+}
+
+#[test]
+fn cp_after_version_before_title_errors() {
+    let _g = fresh();
+    feed_version();
+    // After the version line only `LS title` is valid.
+    let m = assert_parse_error(feed_chat_line("LS cp 0,0,0 2,4,2 x"));
+    assert!(m.contains("expected `LS title`"), "{m}");
+}
+
+#[test]
+fn unknown_version_errors() {
+    let _g = fresh();
+    let m = assert_parse_error(feed_chat_line("LS v99"));
+    assert!(m.contains("unsupported LS format version 99"), "{m}");
+}
+
+#[test]
+fn version_with_trailing_args_errors() {
+    let _g = fresh();
+    let m = assert_parse_error(feed_chat_line("LS v1 extra"));
+    assert!(m.contains("takes no arguments"), "{m}");
 }
 
 // ---- Loaded ----
@@ -441,8 +508,8 @@ fn round_trip_with_overflow_label_on_end() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    // title + cp(start inline) + cp(end bare) + label + end
-    assert_eq!(lines.len(), 1 + 1 + 1 + 1 + 1);
+    // version + title + cp(start inline) + cp(end bare) + label + end
+    assert_eq!(lines.len(), 1 + 1 + 1 + 1 + 1 + 1);
     assert_eq!(lines.last().unwrap(), "LS end");
     assert!(lines[lines.len() - 2].starts_with("LS label "));
     feed_all_but_last(&lines);
@@ -451,16 +518,31 @@ fn round_trip_with_overflow_label_on_end() {
 }
 
 #[test]
-fn refeed_title_resets_buffer() {
+fn refeed_version_resets_buffer() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T1"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 start"));
     assert_buffered(feed_chat_line("LS cp 10,0,0 2,4,2 mid"));
-    // Re-fed title resets to NeedFirst.
+    // Re-fed version line is the universal reset anchor: drops the
+    // buffered checkpoints and returns to NeedTitle.
+    assert_buffered(feed_chat_line("LS v1"));
     assert_buffered(feed_chat_line("LS title T2"));
     // No checkpoints buffered yet, so `LS end` must error.
     let m = assert_parse_error(feed_chat_line("LS end"));
     assert!(m.contains("no checkpoints before `LS end`"), "{m}");
+}
+
+#[test]
+fn mid_track_title_is_not_a_reset() {
+    let _g = fresh();
+    feed_version();
+    assert_buffered(feed_chat_line("LS title T1"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 start"));
+    // A second `LS title` mid-track no longer resets (the version line
+    // does); it's rejected so a stray title can't silently truncate.
+    let m = assert_parse_error(feed_chat_line("LS title T2"));
+    assert!(m.contains("must start with `LS v"), "{m}");
 }
 
 #[test]
@@ -496,6 +578,7 @@ fn mixed_inline_and_followup_labels_round_trip() {
     // (becomes End) inline label. Round-trips to runtime kinds Start,
     // Split, End.
     let lines = [
+        "LS v1",
         "LS title mixed",
         "LS cp 0,0,0 2,4,2 start",
         "LS cp 10,0,0 2,4,2",
@@ -581,12 +664,13 @@ fn mixed_aabb_and_map_round_trip_via_encoder() {
 fn map_in_idle_errors() {
     let _g = fresh();
     let m = assert_parse_error(feed_chat_line("LS map spawn"));
-    assert!(m.contains("no `LS title`"), "{m}");
+    assert!(m.contains("version line"), "{m}");
 }
 
 #[test]
 fn map_in_need_label_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS map spawn"));
     let m = assert_parse_error(feed_chat_line("LS map other"));
@@ -596,6 +680,7 @@ fn map_in_need_label_errors() {
 #[test]
 fn empty_map_name_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     let m = assert_parse_error(feed_chat_line("LS map "));
     assert!(m.contains("map name is empty"), "{m}");
@@ -607,6 +692,7 @@ fn inline_map_label_round_trip() {
     // Decoder accepts `LS map <name> <label>` inline (the encoder
     // emits this form when it fits the per-line cap).
     let lines = [
+        "LS v1",
         "LS title T",
         "LS map spawn start",
         "LS map goal end",
@@ -632,6 +718,7 @@ fn map_inline_label_preserves_multi_space() {
     // Only the first space delimits name from label; subsequent
     // whitespace is part of the label verbatim.
     let lines = [
+        "LS v1",
         "LS title T",
         "LS map spawn  start  pad ",
         "LS map goal end",
@@ -650,6 +737,7 @@ fn map_followup_label_round_trip() {
     // The bare `LS map <name>` + follow-up `LS label <text>` form is
     // what the encoder emits when the inline form overflows the cap.
     let lines = [
+        "LS v1",
         "LS title T",
         "LS map spawn",
         "LS label first checkpoint",
@@ -673,6 +761,7 @@ fn map_followup_label_round_trip() {
 #[test]
 fn map_inline_empty_label_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     // Trailing space after map name with no label text → mirrors the
     // `LS cp` empty-inline-label error.
@@ -686,6 +775,7 @@ fn map_inline_empty_label_errors() {
 fn user_example_round_trips() {
     let _g = fresh();
     let lines = [
+        "LS v1",
         "LS title Load Test",
         "LS cp 0,0,0 2,4,2 Start CheckPoint",
         "LS cp 10,0,0 2,4,2 Split A",
@@ -814,6 +904,7 @@ fn pause_followup_label_round_trips() {
     // encoder's overflow fallback path. Closing `LS unpause` keeps
     // the pairing validator happy.
     let lines = [
+        "LS v1",
         "LS title T",
         "LS cp 0,0,0 2,4,2 s",
         "LS pause 10,0,0 2,4,2",
@@ -840,6 +931,7 @@ fn lone_pause_rejected_at_finalization() {
     // The pairing validator rejects on `LS end` because the Pause has
     // no matching Resume.
     let lines = [
+        "LS v1",
         "LS title T",
         "LS cp 0,0,0 2,4,2 s",
         "LS pause 10,0,0 2,4,2 p",
@@ -857,22 +949,23 @@ fn lone_pause_rejected_at_finalization() {
 }
 
 #[test]
-fn pause_before_title_errors() {
+fn pause_before_version_errors() {
     let _g = fresh();
     let m = assert_parse_error(feed_chat_line("LS pause 50,0,0 2,4,2"));
-    assert!(m.contains("no `LS title`"), "{m}");
+    assert!(m.contains("version line"), "{m}");
 }
 
 #[test]
-fn unpause_before_title_errors() {
+fn unpause_before_version_errors() {
     let _g = fresh();
     let m = assert_parse_error(feed_chat_line("LS unpause 50,0,0 2,4,2"));
-    assert!(m.contains("no `LS title`"), "{m}");
+    assert!(m.contains("version line"), "{m}");
 }
 
 #[test]
 fn pause_as_first_checkpoint_errors() {
     let _g = fresh();
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     // First checkpoint must be Start (cp/map line). `LS pause` would
     // give it Pause kind; reject so the position-implicit Start at
@@ -886,6 +979,7 @@ fn pause_as_last_checkpoint_errors() {
     let _g = fresh();
     // Sequence: title, cp(start), pause, end → reject because End
     // promotion can only target Split kinds, not Pause/Resume.
+    feed_version();
     assert_buffered(feed_chat_line("LS title T"));
     assert_buffered(feed_chat_line("LS cp 0,0,0 2,4,2 s"));
     assert_buffered(feed_chat_line("LS pause 10,0,0 2,4,2 p"));
@@ -900,8 +994,8 @@ fn pause_as_last_checkpoint_errors() {
 
 #[test]
 fn decode_geometry_parses_bare_lines() {
-    let text = "LS title Load Test\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS map mapname\nLS cp \
-                20,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS title Load Test\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS map \
+                mapname\nLS cp 20,0,0 2,4,2\nLS end";
     let track = decode_geometry(text).unwrap();
     assert_eq!(track.name, "Load Test");
     let kinds: Vec<_> = track.checkpoints.iter().map(|c| c.kind).collect();
@@ -926,8 +1020,8 @@ fn decode_geometry_parses_bare_lines() {
 
 #[test]
 fn decode_geometry_handles_pause_unpause() {
-    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS pause 10,0,0 2,4,2\nLS unpause 20,0,0 2,4,2\nLS \
-                cp 30,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS pause 10,0,0 2,4,2\nLS unpause 20,0,0 \
+                2,4,2\nLS cp 30,0,0 2,4,2\nLS end";
     let track = decode_geometry(text).unwrap();
     let kinds: Vec<_> = track.checkpoints.iter().map(|c| c.kind).collect();
     assert_eq!(
@@ -943,47 +1037,47 @@ fn decode_geometry_handles_pause_unpause() {
 
 #[test]
 fn decode_geometry_rejects_non_ls_line() {
-    let text = "LS title T\nnot an ls line\nLS cp 0,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS title T\nnot an ls line\nLS cp 0,0,0 2,4,2\nLS end";
     assert!(decode_geometry(text).is_err());
 }
 
 #[test]
 fn decode_geometry_rejects_missing_end() {
-    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2";
+    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("missing `LS end`"), "{err}");
 }
 
 #[test]
 fn decode_geometry_rejects_missing_title() {
-    let text = "LS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
     assert!(decode_geometry(text).is_err());
 }
 
 #[test]
 fn decode_geometry_rejects_too_few_checkpoints() {
-    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("at least 2 checkpoints"), "{err}");
 }
 
 #[test]
 fn decode_geometry_rejects_pause_as_last() {
-    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS pause 10,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS pause 10,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("must be a plain checkpoint"), "{err}");
 }
 
 #[test]
 fn decode_geometry_rejects_pause_first() {
-    let text = "LS title T\nLS pause 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS title T\nLS pause 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("first checkpoint must be"), "{err}");
 }
 
 #[test]
 fn decode_geometry_rejects_standalone_label() {
-    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS label oops\nLS cp 10,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS label oops\nLS cp 10,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("LS label"), "{err}");
 }
@@ -992,7 +1086,8 @@ fn decode_geometry_rejects_standalone_label() {
 fn decode_geometry_ignores_inline_label() {
     // A hand-edited inline label on a checkpoint line is dropped; the
     // checkpoint still decodes with an empty label.
-    let text = "LS title T\nLS cp 0,0,0 2,4,2 strayLabel\nLS cp 10,0,0 2,4,2 another\nLS end";
+    let text =
+        "LS v1\nLS title T\nLS cp 0,0,0 2,4,2 strayLabel\nLS cp 10,0,0 2,4,2 another\nLS end";
     let track = decode_geometry(text).unwrap();
     assert_eq!(track.checkpoints.len(), 2);
     assert!(track.checkpoints.iter().all(|c| c.label.is_empty()));
@@ -1002,10 +1097,37 @@ fn decode_geometry_ignores_inline_label() {
 fn decode_geometry_tolerates_indentation_and_crlf() {
     // Leading indentation (formatter), CRLF endings, and a blank line
     // all survive: the decoder trims and skips them.
-    let text = "    LS title T\r\n\tLS cp 0,0,0 2,4,2\r\n  LS cp 10,0,0 2,4,2\r\n\r\nLS end";
+    let text =
+        "  LS v1\r\n    LS title T\r\n\tLS cp 0,0,0 2,4,2\r\n  LS cp 10,0,0 2,4,2\r\n\r\nLS end";
     let track = decode_geometry(text).unwrap();
     assert_eq!(track.name, "T");
     assert_eq!(track.checkpoints.len(), 2);
     assert_eq!(track.checkpoints[0].kind, CheckpointKind::Start);
     assert_eq!(track.checkpoints[1].kind, CheckpointKind::End);
+}
+
+#[test]
+fn decode_geometry_rejects_missing_version() {
+    // Pre-version `.lss` payloads open with `LS title`; strict rejection
+    // is what makes them regenerate on the next save.
+    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    let err = decode_geometry(text).unwrap_err().to_string();
+    assert!(err.contains("version line"), "{err}");
+}
+
+#[test]
+fn decode_geometry_rejects_unknown_version() {
+    let text = "LS v99\nLS title T\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    let err = decode_geometry(text).unwrap_err().to_string();
+    assert!(err.contains("unsupported LS format version 99"), "{err}");
+}
+
+#[test]
+fn decode_geometry_rejects_version_not_first() {
+    let text = "LS title T\nLS v1\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    let err = decode_geometry(text).unwrap_err().to_string();
+    assert!(
+        err.contains("version line") || err.contains("must come first"),
+        "{err}"
+    );
 }

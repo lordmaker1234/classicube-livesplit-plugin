@@ -68,19 +68,20 @@ fn assert_lines_within_cap(lines: &[String]) {
 fn loadtest_round_trip_all_inline() {
     let track = loadtest_track();
     let lines = encode_for_chat(&track).unwrap();
-    // title + 4 cps (each inline) + end
-    assert_eq!(lines.len(), 1 + 4 + 1);
+    // version + title + 4 cps (each inline) + end
+    assert_eq!(lines.len(), 1 + 1 + 4 + 1);
     assert_lines_within_cap(&lines);
-    assert!(lines[0].starts_with("LS title "));
-    assert!(lines[1].starts_with("LS cp "));
+    assert_eq!(lines[0], "LS v1");
+    assert!(lines[1].starts_with("LS title "));
     assert!(lines[2].starts_with("LS cp "));
     assert!(lines[3].starts_with("LS cp "));
     assert!(lines[4].starts_with("LS cp "));
-    assert_eq!(lines[5], "LS end");
+    assert!(lines[5].starts_with("LS cp "));
+    assert_eq!(lines[6], "LS end");
 }
 
 #[test]
-fn two_checkpoint_round_trip_has_four_lines() {
+fn two_checkpoint_round_trip_has_five_lines() {
     let track = Track {
         name: "T".into(),
         checkpoints: vec![
@@ -89,9 +90,10 @@ fn two_checkpoint_round_trip_has_four_lines() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    // title + 2 cps (inline) + end
-    assert_eq!(lines.len(), 4);
+    // version + title + 2 cps (inline) + end
+    assert_eq!(lines.len(), 5);
     assert_lines_within_cap(&lines);
+    assert_eq!(lines[0], "LS v1");
     assert_eq!(lines.last().unwrap(), "LS end");
 }
 
@@ -184,10 +186,10 @@ fn falls_back_to_separate_label_line_when_inline_overflows() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    // title + (cp + label) + cp + end
-    assert_eq!(lines.len(), 1 + 2 + 1 + 1);
-    assert!(lines[1].starts_with("LS cp ") && !lines[1].ends_with(&label));
-    assert_eq!(lines[2], format!("LS label {label}"));
+    // version + title + (cp + label) + cp + end
+    assert_eq!(lines.len(), 1 + 1 + 2 + 1 + 1);
+    assert!(lines[2].starts_with("LS cp ") && !lines[2].ends_with(&label));
+    assert_eq!(lines[3], format!("LS label {label}"));
     assert_eq!(lines.last().unwrap(), "LS end");
     assert_lines_within_cap(&lines);
 }
@@ -213,9 +215,9 @@ fn preserves_multi_space_label_inline() {
     };
     let lines = encode_for_chat(&track).unwrap();
     assert!(
-        lines[1].ends_with(" my  multi  word  label"),
+        lines[2].ends_with(" my  multi  word  label"),
         "got: {}",
-        lines[1]
+        lines[2]
     );
 }
 
@@ -294,13 +296,14 @@ fn map_only_two_checkpoint_emits_inline_map_lines_and_end() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    // title + 2 inline map lines + end
-    assert_eq!(lines.len(), 4);
+    // version + title + 2 inline map lines + end
+    assert_eq!(lines.len(), 5);
     assert_lines_within_cap(&lines);
-    assert_eq!(lines[0], "LS title M");
-    assert_eq!(lines[1], "LS map spawn start");
-    assert_eq!(lines[2], "LS map goal end");
-    assert_eq!(lines[3], "LS end");
+    assert_eq!(lines[0], "LS v1");
+    assert_eq!(lines[1], "LS title M");
+    assert_eq!(lines[2], "LS map spawn start");
+    assert_eq!(lines[3], "LS map goal end");
+    assert_eq!(lines[4], "LS end");
 }
 
 #[test]
@@ -321,12 +324,13 @@ fn mixed_aabb_and_map_interleave() {
     };
     let lines = encode_for_chat(&track).unwrap();
     assert_lines_within_cap(&lines);
-    assert!(lines[0].starts_with("LS title "));
-    assert!(lines[1].starts_with("LS cp "));
-    assert_eq!(lines[2], "LS map mid_map midmap");
-    assert!(lines[3].starts_with("LS cp "));
-    assert_eq!(lines[4], "LS map goal fin");
-    assert_eq!(lines[5], "LS end");
+    assert_eq!(lines[0], "LS v1");
+    assert!(lines[1].starts_with("LS title "));
+    assert!(lines[2].starts_with("LS cp "));
+    assert_eq!(lines[3], "LS map mid_map midmap");
+    assert!(lines[4].starts_with("LS cp "));
+    assert_eq!(lines[5], "LS map goal fin");
+    assert_eq!(lines[6], "LS end");
 }
 
 #[test]
@@ -343,13 +347,14 @@ fn map_falls_back_to_separate_label_line_when_inline_overflows() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    // title + (map bare + label) + map inline + end
-    assert_eq!(lines.len(), 1 + 2 + 1 + 1);
-    assert_eq!(lines[0], "LS title T");
-    assert_eq!(lines[1], "LS map shortmap_a");
-    assert_eq!(lines[2], format!("LS label {label}"));
-    assert_eq!(lines[3], "LS map goal fin");
-    assert_eq!(lines[4], "LS end");
+    // version + title + (map bare + label) + map inline + end
+    assert_eq!(lines.len(), 1 + 1 + 2 + 1 + 1);
+    assert_eq!(lines[0], "LS v1");
+    assert_eq!(lines[1], "LS title T");
+    assert_eq!(lines[2], "LS map shortmap_a");
+    assert_eq!(lines[3], format!("LS label {label}"));
+    assert_eq!(lines[4], "LS map goal fin");
+    assert_eq!(lines[5], "LS end");
     assert_lines_within_cap(&lines);
 }
 
@@ -444,6 +449,7 @@ fn user_example_round_trips_through_encoder() {
     assert_eq!(
         lines,
         vec![
+            "LS v1",
             "LS title Load Test",
             "LS cp 0,0,0 2,4,2 Start CheckPoint",
             "LS cp 10,0,0 2,4,2 Split A",
@@ -485,6 +491,7 @@ fn pause_and_unpause_checkpoints_emit_interleaved_with_splits() {
     assert_eq!(
         lines,
         vec![
+            "LS v1",
             "LS title T",
             "LS cp 0,0,0 2,4,2 s",
             "LS pause 10,0,0 2,4,2 p",
@@ -524,6 +531,7 @@ fn cross_map_pause_via_map_loaded_between() {
     assert_eq!(
         lines,
         vec![
+            "LS v1",
             "LS title T",
             "LS cp 0,0,0 2,4,2 s",
             "LS pause 10,0,0 2,4,2 p",
@@ -615,10 +623,10 @@ fn pause_label_falls_back_to_separate_line_when_inline_overflows() {
         ],
     };
     let lines = encode_for_chat(&track).unwrap();
-    // title + cp(start) + (pause bare + label) + unpause + cp(end) + end
-    assert_eq!(lines.len(), 1 + 1 + 2 + 1 + 1 + 1);
-    assert_eq!(lines[2], "LS pause 10,0,0 2,4,2");
-    assert_eq!(lines[3], format!("LS label {label}"));
+    // version + title + cp(start) + (pause bare + label) + unpause + cp(end) + end
+    assert_eq!(lines.len(), 1 + 1 + 1 + 2 + 1 + 1 + 1);
+    assert_eq!(lines[3], "LS pause 10,0,0 2,4,2");
+    assert_eq!(lines[4], format!("LS label {label}"));
     assert_lines_within_cap(&lines);
 }
 
@@ -731,6 +739,7 @@ fn disk_encode_omits_all_labels() {
     assert_eq!(
         lines,
         vec![
+            "LS v1",
             "LS title Load Test",
             "LS cp 0,0,0 2,4,2",
             "LS cp 10,0,0 2,4,2",
@@ -770,6 +779,7 @@ fn disk_encode_emits_bare_pause_unpause() {
     assert_eq!(
         lines,
         vec![
+            "LS v1",
             "LS title T",
             "LS cp 0,0,0 2,4,2",
             "LS pause 10,0,0 2,4,2",
@@ -803,6 +813,7 @@ fn disk_encode_ignores_label_length_unlike_chat() {
     assert_eq!(
         lines,
         vec![
+            "LS v1",
             "LS title T",
             "LS cp 0,0,0 2,4,2",
             "LS cp 10,0,0 2,4,2",

@@ -60,8 +60,10 @@ fn serialized_text_is_readable_and_label_free() {
     // label rides after the coords / map name.
     assert_eq!(
         text,
-        "LS title any%\nLS cp 64,40,128 2,3,2\nLS map AwesomeLobby\nLS cp 200,50,400 4,2,4\nLS end"
+        "LS v1\nLS title any%\nLS cp 64,40,128 2,3,2\nLS map AwesomeLobby\nLS cp 200,50,400 \
+         4,2,4\nLS end"
     );
+    assert!(text.starts_with("LS v1\n"));
     assert!(text.contains("LS title "));
     assert!(text.contains("LS cp "));
     assert!(text.contains("LS map "));
