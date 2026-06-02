@@ -474,6 +474,29 @@ pub fn editor_set_label(i: usize, text: String) -> bool {
     }
 }
 
+/// Re-draw the AABB of the existing checkpoint at `i` (`edit redraw`).
+/// Like [`editor_insert`], samples run-progress before mutating and
+/// notifies a connected timer if it aborted a run. Returns `true` on
+/// success.
+pub fn editor_relocate(i: usize, aabb: Aabb) -> bool {
+    let was_in_progress = run_in_progress();
+    match with_state(|s| s.set_trigger(i, aabb)) {
+        None => {
+            chat_print("&eLiveSplit: plugin not active");
+            false
+        }
+        Some(Err(e)) => {
+            chat_print(&format!("&cLiveSplit: cannot redraw checkpoint: {e}"));
+            false
+        }
+        Some(Ok(())) => {
+            reset_timer_if_was_running(was_in_progress);
+            chat_print(&format!("&aLiveSplit: redrew checkpoint #{i}"));
+            true
+        }
+    }
+}
+
 pub fn clear_track() {
     let outcome = with_state(|s| {
         let had_track = s.track.is_some();

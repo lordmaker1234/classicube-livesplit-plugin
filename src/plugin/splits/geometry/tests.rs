@@ -1413,6 +1413,73 @@ fn set_label_does_not_resize_or_rearm() {
 }
 
 #[test]
+fn set_trigger_replaces_aabb_keeping_kind_and_label() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    // Give the target a distinguishing label so we can confirm it survives.
+    state.set_label(1, "midpoint".into()).unwrap();
+    let new_box = aabb((100.0, 0.0, 0.0), (102.0, 4.0, 2.0));
+    state.set_trigger(1, new_box).unwrap();
+    let t = state.track.as_ref().unwrap();
+    // List length unchanged; only the trigger geometry moved.
+    assert_eq!(t.checkpoints.len(), 4);
+    assert_eq!(t.checkpoints[1].trigger, Trigger::Aabb(new_box));
+    // Kind and label are preserved (non-structural mutation).
+    assert_eq!(t.checkpoints[1].kind, CheckpointKind::Split);
+    assert_eq!(t.checkpoints[1].label, "midpoint");
+}
+
+#[test]
+fn set_trigger_rearms_run() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    // Pretend a run is mid-flight.
+    state.next_index = 2;
+    state.fired = vec![true, true, false, false];
+    state.last_inside = vec![true, false, false, false];
+    state
+        .set_trigger(1, aabb((100.0, 0.0, 0.0), (102.0, 4.0, 2.0)))
+        .unwrap();
+    // Unlike `set_label`, redrawing geometry re-arms the run.
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false; 4]);
+    assert_eq!(state.last_inside, vec![false; 4]);
+}
+
+#[test]
+fn set_trigger_rejects_map_loaded() {
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp_map(CheckpointKind::Split, "mid"), // idx 1, MapLoaded
+            cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some(TEST_MAP.to_string()));
+    assert!(
+        state
+            .set_trigger(1, aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)))
+            .is_err()
+    );
+    // The map-transition checkpoint is untouched.
+    let t = state.track.as_ref().unwrap();
+    assert!(matches!(t.checkpoints[1].trigger, Trigger::MapLoaded(ref n) if n == "mid"));
+}
+
+#[test]
+fn set_trigger_rejects_out_of_range() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    assert!(
+        state
+            .set_trigger(99, aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)))
+            .is_err()
+    );
+}
+
+#[test]
 fn mutation_methods_error_without_track() {
     let mut state = SplitsState::default();
     assert!(
@@ -1422,6 +1489,11 @@ fn mutation_methods_error_without_track() {
     );
     assert!(state.delete_checkpoint(0).is_err());
     assert!(state.set_label(0, "x".into()).is_err());
+    assert!(
+        state
+            .set_trigger(0, aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)))
+            .is_err()
+    );
 }
 
 #[test]

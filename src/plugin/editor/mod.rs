@@ -36,12 +36,23 @@ use crate::{
 /// `/client LiveSplit edit label <i> <text>`.
 const PLACEHOLDER_LABEL: &str = "checkpoint";
 
-/// A placement armed via `edit place`, waiting for its two corner
-/// clicks. `corner_a` is `None` until the first click lands.
+/// Which mutation a pending two-click capture commits to.
+#[derive(Clone, Copy)]
+enum PendingOp {
+    /// `edit place [i]`: insert a checkpoint. `None` appends to the
+    /// current map section; `Some(i)` inserts at index `i`.
+    Place(Option<usize>),
+    /// `edit redraw <i>`: replace the AABB of the existing checkpoint at
+    /// `i`, keeping its kind / label / position.
+    Redraw(usize),
+}
+
+/// A two-click capture armed via `edit place` / `edit redraw`, waiting
+/// for its two corner clicks. `corner_a` is `None` until the first click
+/// lands.
 struct Pending {
-    /// Insert position passed to `splits::editor_insert` once both
-    /// corners are clicked (`None` = append before End).
-    target: Option<usize>,
+    /// Which mutation the two corners commit to once both are clicked.
+    op: PendingOp,
     corner_a: Option<IVec3>,
 }
 
@@ -96,7 +107,7 @@ pub fn arm_place(target: Option<usize>) {
             return false;
         }
         s.pending = Some(Pending {
-            target,
+            op: PendingOp::Place(target),
             corner_a: None,
         });
         true
@@ -111,6 +122,32 @@ pub fn arm_place(target: Option<usize>) {
             "&aLiveSplit: armed - click corner A (inserts at #{i})"
         )),
     }
+}
+
+/// `edit redraw <i>`. Arm a two-click capture that replaces the AABB of
+/// the existing checkpoint at `i` (keeping its index, kind, and label)
+/// instead of inserting a new one. No index pre-check here -- consistent
+/// with [`arm_place`]; the authoritative range / `MapLoaded` check lives
+/// in `splits::editor_relocate` and surfaces via chat at commit. The two
+/// clicks revert locally, so a wasted arm leaves the map untouched.
+pub fn arm_redraw(i: usize) {
+    let armed = EDITOR_STATE.with_borrow_mut(|s| {
+        if !s.enabled {
+            return false;
+        }
+        s.pending = Some(Pending {
+            op: PendingOp::Redraw(i),
+            corner_a: None,
+        });
+        true
+    });
+    if !armed {
+        chat_print("&cLiveSplit: enable edit mode first (/client LiveSplit edit on)");
+        return;
+    }
+    chat_print(&format!(
+        "&aLiveSplit: armed - click corner A (redraws checkpoint #{i})"
+    ));
 }
 
 /// `edit cancel`. Discard a half-armed placement.
@@ -177,11 +214,7 @@ enum ClickOutcome {
     /// First corner recorded; revert the block and wait for corner B.
     CornerA,
     /// Second corner recorded; revert the block and commit the AABB.
-    CornerB {
-        a: IVec3,
-        b: IVec3,
-        target: Option<usize>,
-    },
+    CornerB { a: IVec3, b: IVec3, op: PendingOp },
 }
 
 /// Called from the [`hook`]'s `Server.SendBlock` override for every block
@@ -212,12 +245,12 @@ pub(super) fn consume_click(x: c_int, y: c_int, z: c_int, old: BlockID) -> bool 
                 ClickOutcome::CornerA
             }
             Some(a) => {
-                let target = pending.target;
+                let op = pending.op;
                 s.pending = None;
                 ClickOutcome::CornerB {
                     a,
                     b: IVec3 { x, y, z },
-                    target,
+                    op,
                 }
             }
         }
@@ -230,10 +263,17 @@ pub(super) fn consume_click(x: c_int, y: c_int, z: c_int, old: BlockID) -> bool 
             chat_print("&aLiveSplit: corner A set; click corner B");
             true
         }
-        ClickOutcome::CornerB { a, b, target } => {
+        ClickOutcome::CornerB { a, b, op } => {
             revert_block(x, y, z, old);
             let aabb = geometry::aabb_from_block_corners(a, b);
-            splits::editor_insert(aabb, PLACEHOLDER_LABEL.to_owned(), target);
+            match op {
+                PendingOp::Place(target) => {
+                    splits::editor_insert(aabb, PLACEHOLDER_LABEL.to_owned(), target);
+                }
+                PendingOp::Redraw(i) => {
+                    splits::editor_relocate(i, aabb);
+                }
+            }
             true
         }
     }

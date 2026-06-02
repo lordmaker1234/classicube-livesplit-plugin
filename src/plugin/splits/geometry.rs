@@ -436,6 +436,30 @@ impl SplitsState {
         Ok(())
     }
 
+    /// Replace the AABB of the existing checkpoint at `i` (`edit redraw`),
+    /// keeping its kind / label / position. Non-structural (no kind
+    /// re-derive, no latch realloc), but the changed geometry invalidates a
+    /// run in progress, so the cursor + latches re-arm to 0 via `rearm()`.
+    /// `Err` if no track is loaded, `i` is out of range, or `i` is a
+    /// `MapLoaded` (map-transition) checkpoint, which has no zone.
+    pub fn set_trigger(&mut self, i: usize, aabb: Aabb) -> Result<()> {
+        {
+            let Some(track) = self.track.as_mut() else {
+                bail!("no track loaded");
+            };
+            let n = track.checkpoints.len();
+            let Some(cp) = track.checkpoints.get_mut(i) else {
+                bail!("checkpoint index {i} out of range (track has {n})");
+            };
+            if matches!(cp.trigger, Trigger::MapLoaded(_)) {
+                bail!("checkpoint #{i} is a map transition; only zone checkpoints can be redrawn");
+            }
+            cp.trigger = Trigger::Aabb(aabb);
+        }
+        self.rearm();
+        Ok(())
+    }
+
     /// Force the boundary kinds after a structural mutation: index 0 ->
     /// `Start`, last -> `End`. Legitimately-middle `Split`/`Pause`/
     /// `Resume`/`MapLoaded` kinds are left untouched, so author-/load-
