@@ -28,7 +28,10 @@ pub(crate) const LS_FORMAT_VERSION: u32 = 1;
 ///
 /// Layout:
 ///   line[0]    = `LS v<n>` (format version; the receiver's reset anchor)
-///   line[1]    = `LS title <name>`
+///   line[1]    = `LS title <name>` (chat-only; the disk variant skips it
+///                -- the title lives in the `.lss` `<CategoryName>` -- so
+///                on disk the version line is followed directly by the
+///                first checkpoint)
 ///   line[2..n] = per checkpoint, in order. Each checkpoint emits one
 ///                of four keyword lines:
 ///                  `LS cp <min> <size> [label]`      (Split, AABB)
@@ -56,29 +59,35 @@ pub fn encode_for_chat(track: &Track) -> Result<Vec<String>> {
 
 /// Encode a `Track`'s geometry into bare `LS …` lines for on-disk
 /// storage (the `.lss` `ClassiCubeTrack` custom variable). Identical to
-/// [`encode_for_chat`] except it never emits labels: every checkpoint
-/// line is bare (`LS cp <min> <size>` / `LS map <name>` / `LS pause …` /
-/// `LS unpause …`) with no inline labels and no `LS label` follow-up
-/// lines. Labels live in the `.lss` `<Segment>` elements instead, so a
-/// label-only edit yields identical disk text (the writer's dedup gate
-/// then skips it). The non-empty-label invariant is also skipped --
-/// label content is irrelevant to disk geometry.
+/// [`encode_for_chat`] except it never emits the title or labels: the
+/// `LS title` line is dropped (the title lives in the `.lss`
+/// `<CategoryName>`) and every checkpoint line is bare (`LS cp <min>
+/// <size>` / `LS map <name>` / `LS pause …` / `LS unpause …`) with no
+/// inline labels and no `LS label` follow-up lines. Labels live in the
+/// `.lss` `<Segment>` elements instead, so a label-only edit yields
+/// identical disk text (the writer's dedup gate then skips it). The
+/// non-empty-name and non-empty-label invariants are also skipped --
+/// name/label content is irrelevant to disk geometry (the re-canonicalize
+/// path decodes to a name-less `Track`).
 pub fn encode_for_disk(track: &Track) -> Result<Vec<String>> {
     encode_lines(track, false)
 }
 
 /// Shared body of [`encode_for_chat`] / [`encode_for_disk`]. When
-/// `emit_labels` is true, each checkpoint's label rides inline (or in a
-/// follow-up `LS label` line when the inline form overflows
-/// `MAX_LINE_CP`) and a non-empty-label check is enforced. When false,
-/// every keyword line is emitted bare and the label check is skipped.
-fn encode_lines(track: &Track, emit_labels: bool) -> Result<Vec<String>> {
+/// `for_chat` is true, the chat-only metadata is emitted: the `LS title`
+/// line, each checkpoint's label (inline, or in a follow-up `LS label`
+/// line when the inline form overflows `MAX_LINE_CP`), and the
+/// non-empty-name / non-empty-label checks. When false (disk), the title
+/// line and all labels are omitted and those checks are skipped.
+fn encode_lines(track: &Track, for_chat: bool) -> Result<Vec<String>> {
     let n = track.checkpoints.len();
     ensure!(
         n >= 2,
         "track has {n} checkpoint(s); need at least 2 (Start + End)"
     );
-    ensure!(!track.name.trim().is_empty(), "track name is empty");
+    if for_chat {
+        ensure!(!track.name.trim().is_empty(), "track name is empty");
+    }
 
     for (i, cp) in track.checkpoints.iter().enumerate() {
         let valid = if i == 0 {
@@ -98,7 +107,7 @@ fn encode_lines(track: &Track, emit_labels: bool) -> Result<Vec<String>> {
                 cp.kind
             );
         }
-        if emit_labels {
+        if for_chat {
             ensure!(
                 !cp.label.trim().is_empty(),
                 "checkpoint[{i}] label is empty (encoder requires non-empty labels)"
@@ -124,13 +133,19 @@ fn encode_lines(track: &Track, emit_labels: bool) -> Result<Vec<String>> {
     // batch decoder. Always emitted; the cap-check loop below covers it.
     lines.push(format!("LS v{LS_FORMAT_VERSION}"));
 
-    let title = format!("LS title {}", track.name);
-    let title_cp = title.chars().count();
-    ensure!(
-        title_cp <= MAX_LINE_CP,
-        "title line is {title_cp} cp; cap is {MAX_LINE_CP}"
-    );
-    lines.push(title);
+    // The title is chat-only metadata: it carries the sender's chosen
+    // category name to the receiver. On disk the title comes from the
+    // `.lss` `<CategoryName>`, so the disk variant skips this line
+    // entirely (the same way it skips labels).
+    if for_chat {
+        let title = format!("LS title {}", track.name);
+        let title_cp = title.chars().count();
+        ensure!(
+            title_cp <= MAX_LINE_CP,
+            "title line is {title_cp} cp; cap is {MAX_LINE_CP}"
+        );
+        lines.push(title);
+    }
 
     for (i, cp) in track.checkpoints.iter().enumerate() {
         let keyword = match cp.kind {
@@ -163,7 +178,7 @@ fn encode_lines(track: &Track, emit_labels: bool) -> Result<Vec<String>> {
             }
         };
 
-        emit_keyword_line(&mut lines, i, keyword, &body, &cp.label, emit_labels)?;
+        emit_keyword_line(&mut lines, i, keyword, &body, &cp.label, for_chat)?;
     }
 
     lines.push("LS end".to_string());
@@ -181,9 +196,9 @@ fn encode_lines(track: &Track, emit_labels: bool) -> Result<Vec<String>> {
 
 /// Push the `LS <keyword> <body> [label]` line(s) for one checkpoint.
 /// `body` is the already-formatted coord-triple pair (`<min> <size>`) or
-/// map name. With `emit_labels`, the label rides inline when it fits the
+/// map name. With `for_chat`, the label rides inline when it fits the
 /// per-line cap, otherwise the line is emitted bare followed by an
-/// `LS label <text>` line. Without `emit_labels`, only the bare line is
+/// `LS label <text>` line. Without `for_chat`, only the bare line is
 /// emitted (disk geometry: labels come from `<Segment>` elements).
 fn emit_keyword_line(
     lines: &mut Vec<String>,
@@ -191,9 +206,9 @@ fn emit_keyword_line(
     keyword: &str,
     body: &str,
     label: &str,
-    emit_labels: bool,
+    for_chat: bool,
 ) -> Result<()> {
-    if emit_labels {
+    if for_chat {
         let inline = format!("LS {keyword} {body} {label}");
         if inline.chars().count() <= MAX_LINE_CP {
             lines.push(inline);
@@ -209,7 +224,7 @@ fn emit_keyword_line(
     );
     lines.push(bare);
 
-    if emit_labels {
+    if for_chat {
         let label_line = format!("LS label {label}");
         let label_cp = label_line.chars().count();
         ensure!(

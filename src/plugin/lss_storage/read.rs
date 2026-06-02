@@ -213,8 +213,12 @@ fn load_from_file(path: &Path) -> Result<Track> {
     let Some(value) = run.metadata().custom_variable_value(CUSTOM_VAR_NAME) else {
         bail!("no ClassiCubeTrack custom variable");
     };
+    // The title (track/category name) lives in the `.lss` `<CategoryName>`,
+    // not the geometry payload; `payload::parse` overwrites the decoded
+    // empty name with it.
+    let title = run.category_name().to_owned();
     let labels = labels_from(&run);
-    payload::parse(value, labels).context("parsing ClassiCubeTrack payload")
+    payload::parse(value, title, labels).context("parsing ClassiCubeTrack payload")
 }
 
 fn labels_from(run: &Run) -> Vec<String> {

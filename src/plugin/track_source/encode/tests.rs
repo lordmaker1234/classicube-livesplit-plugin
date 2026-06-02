@@ -740,7 +740,6 @@ fn disk_encode_omits_all_labels() {
         lines,
         vec![
             "LS v1",
-            "LS title Load Test",
             "LS cp 0,0,0 2,4,2",
             "LS cp 10,0,0 2,4,2",
             "LS cp 20,0,0 2,4,2",
@@ -752,6 +751,9 @@ fn disk_encode_omits_all_labels() {
         ]
     );
     assert!(lines.iter().all(|l| !l.starts_with("LS label")));
+    // The title is chat-only metadata; the disk variant drops it (it
+    // comes from the `.lss` `<CategoryName>` on read).
+    assert!(lines.iter().all(|l| !l.starts_with("LS title")));
 }
 
 #[test]
@@ -780,7 +782,6 @@ fn disk_encode_emits_bare_pause_unpause() {
         lines,
         vec![
             "LS v1",
-            "LS title T",
             "LS cp 0,0,0 2,4,2",
             "LS pause 10,0,0 2,4,2",
             "LS unpause 20,0,0 2,4,2",
@@ -812,13 +813,7 @@ fn disk_encode_ignores_label_length_unlike_chat() {
     let lines = encode_for_disk(&track).unwrap();
     assert_eq!(
         lines,
-        vec![
-            "LS v1",
-            "LS title T",
-            "LS cp 0,0,0 2,4,2",
-            "LS cp 10,0,0 2,4,2",
-            "LS end",
-        ]
+        vec!["LS v1", "LS cp 0,0,0 2,4,2", "LS cp 10,0,0 2,4,2", "LS end",]
     );
 }
 
@@ -836,4 +831,26 @@ fn disk_encode_allows_empty_labels() {
     };
     assert!(encode_for_chat(&track).is_err());
     assert!(encode_for_disk(&track).is_ok());
+}
+
+#[test]
+fn disk_encode_allows_empty_name() {
+    // The non-empty-name invariant is chat-only (the title is the chat
+    // sender's chosen category name). The disk variant drops the title
+    // line entirely, so a name-less track serializes fine -- this is the
+    // shape the re-canonicalize path feeds back (decode yields an empty
+    // name).
+    let track = Track {
+        name: String::new(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0), "s"),
+            cp(CheckpointKind::End, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0), "e"),
+        ],
+    };
+    assert!(encode_for_chat(&track).is_err());
+    let lines = encode_for_disk(&track).unwrap();
+    assert_eq!(
+        lines,
+        vec!["LS v1", "LS cp 0,0,0 2,4,2", "LS cp 10,0,0 2,4,2", "LS end",]
+    );
 }

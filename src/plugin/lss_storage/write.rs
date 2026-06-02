@@ -37,7 +37,7 @@ pub async fn save_track(track: Track, server_display: String, map: String, annou
     let dir = path::track_dir(&server_display, &map);
     let category = path::sanitize_component(&track.name);
 
-    match save_track_to(&track, &server_display, &dir, &category) {
+    match save_track_to(&track, &dir, &category) {
         Ok(SaveOutcome::Wrote(path)) => {
             info!(?path, "wrote new track version");
             let filename = path.file_name().map_or_else(
@@ -63,12 +63,7 @@ pub(super) enum SaveOutcome {
     AlreadyLatest,
 }
 
-pub(super) fn save_track_to(
-    track: &Track,
-    server_display: &str,
-    dir: &Path,
-    category: &str,
-) -> Result<SaveOutcome> {
+pub(super) fn save_track_to(track: &Track, dir: &Path, category: &str) -> Result<SaveOutcome> {
     let canonical = payload::serialize_canonical(track).context("serializing payload")?;
 
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -84,7 +79,7 @@ pub(super) fn save_track_to(
     let final_path = dir.join(format!("{category}-v{next_version}.lss"));
     let tmp_path = dir.join(format!("{category}-v{next_version}.lss.tmp"));
 
-    let xml = build_lss_xml(track, server_display, &canonical)?;
+    let xml = build_lss_xml(track, &canonical)?;
 
     fs::write(&tmp_path, xml.as_bytes())
         .with_context(|| format!("writing {}", tmp_path.display()))?;
@@ -137,13 +132,19 @@ fn same_as_latest(path: &Path, canonical: &str) -> Result<bool> {
     }
 }
 
-fn build_lss_xml(track: &Track, server_display: &str, canonical: &str) -> Result<String> {
+fn build_lss_xml(track: &Track, canonical: &str) -> Result<String> {
     let mut run = Run::new();
     run.set_game_name("ClassiCube");
 
-    let server_pretty = remove_color(server_display);
-    let track_pretty = remove_color(&track.name);
-    run.set_category_name(format!("{server_pretty} - {track_pretty}"));
+    // The category name is the bare (color-stripped) track name. The
+    // server lives only in the file path (`.../<server>/<map>/…`), not in
+    // the `.lss` metadata. On read, `<CategoryName>` is the title source
+    // (the payload no longer carries an `LS title` line). It's
+    // color-stripped here, so the in-memory title comes back without
+    // color codes -- the filename category stem stays stable across a
+    // load -> edit -> re-save cycle because `sanitize_component` also
+    // strips color first and is idempotent on already-stripped text.
+    run.set_category_name(remove_color(&track.name));
 
     // LiveSplit's segment list is everything after the implicit Start:
     // pressing Start is the timer-side run-start action, not a named
@@ -157,9 +158,9 @@ fn build_lss_xml(track: &Track, server_display: &str, canonical: &str) -> Result
 
     // `canonical` is the readable geometry-only `LS …` text (newline-
     // joined bare lines). livesplit-core XML-escapes the value on save
-    // and unescapes it on load, so `&` color codes in the track name
-    // round-trip safely. Labels are NOT in this payload -- they live in
-    // the `<Segment>` elements above.
+    // and unescapes it on load, so any `&` color codes survive intact.
+    // Neither the title nor labels are in this payload -- the title is
+    // the `<CategoryName>` above and labels are the `<Segment>` elements.
     run.metadata_mut()
         .custom_variable_mut(CUSTOM_VAR_NAME)
         .permanent()

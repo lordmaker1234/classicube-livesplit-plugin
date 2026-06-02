@@ -994,10 +994,12 @@ fn pause_as_last_checkpoint_errors() {
 
 #[test]
 fn decode_geometry_parses_bare_lines() {
-    let text = "LS v1\nLS title Load Test\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS map \
-                mapname\nLS cp 20,0,0 2,4,2\nLS end";
+    let text =
+        "LS v1\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS map mapname\nLS cp 20,0,0 2,4,2\nLS end";
     let track = decode_geometry(text).unwrap();
-    assert_eq!(track.name, "Load Test");
+    // Geometry-only: the title isn't in the payload, so the decoded name
+    // is empty (the storage layer fills it from `<CategoryName>`).
+    assert!(track.name.is_empty());
     let kinds: Vec<_> = track.checkpoints.iter().map(|c| c.kind).collect();
     assert_eq!(
         kinds,
@@ -1020,8 +1022,8 @@ fn decode_geometry_parses_bare_lines() {
 
 #[test]
 fn decode_geometry_handles_pause_unpause() {
-    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS pause 10,0,0 2,4,2\nLS unpause 20,0,0 \
-                2,4,2\nLS cp 30,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS cp 0,0,0 2,4,2\nLS pause 10,0,0 2,4,2\nLS unpause 20,0,0 2,4,2\nLS cp \
+                30,0,0 2,4,2\nLS end";
     let track = decode_geometry(text).unwrap();
     let kinds: Vec<_> = track.checkpoints.iter().map(|c| c.kind).collect();
     assert_eq!(
@@ -1037,47 +1039,55 @@ fn decode_geometry_handles_pause_unpause() {
 
 #[test]
 fn decode_geometry_rejects_non_ls_line() {
-    let text = "LS v1\nLS title T\nnot an ls line\nLS cp 0,0,0 2,4,2\nLS end";
+    let text = "LS v1\nnot an ls line\nLS cp 0,0,0 2,4,2\nLS end";
     assert!(decode_geometry(text).is_err());
 }
 
 #[test]
 fn decode_geometry_rejects_missing_end() {
-    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2";
+    let text = "LS v1\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("missing `LS end`"), "{err}");
 }
 
 #[test]
-fn decode_geometry_rejects_missing_title() {
-    let text = "LS v1\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
-    assert!(decode_geometry(text).is_err());
+fn decode_geometry_rejects_title_line() {
+    // A `LS title` line in a geometry payload is a parse error: the title
+    // lives in the `.lss` `<CategoryName>`, not the payload. This is what
+    // makes old title-bearing payloads fail cleanly and regenerate on the
+    // next save.
+    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    let err = decode_geometry(text).unwrap_err().to_string();
+    assert!(
+        err.contains("LS title") && err.contains("CategoryName"),
+        "{err}"
+    );
 }
 
 #[test]
 fn decode_geometry_rejects_too_few_checkpoints() {
-    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS cp 0,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("at least 2 checkpoints"), "{err}");
 }
 
 #[test]
 fn decode_geometry_rejects_pause_as_last() {
-    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS pause 10,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS cp 0,0,0 2,4,2\nLS pause 10,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("must be a plain checkpoint"), "{err}");
 }
 
 #[test]
 fn decode_geometry_rejects_pause_first() {
-    let text = "LS v1\nLS title T\nLS pause 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS pause 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("first checkpoint must be"), "{err}");
 }
 
 #[test]
 fn decode_geometry_rejects_standalone_label() {
-    let text = "LS v1\nLS title T\nLS cp 0,0,0 2,4,2\nLS label oops\nLS cp 10,0,0 2,4,2\nLS end";
+    let text = "LS v1\nLS cp 0,0,0 2,4,2\nLS label oops\nLS cp 10,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("LS label"), "{err}");
 }
@@ -1086,8 +1096,7 @@ fn decode_geometry_rejects_standalone_label() {
 fn decode_geometry_ignores_inline_label() {
     // A hand-edited inline label on a checkpoint line is dropped; the
     // checkpoint still decodes with an empty label.
-    let text =
-        "LS v1\nLS title T\nLS cp 0,0,0 2,4,2 strayLabel\nLS cp 10,0,0 2,4,2 another\nLS end";
+    let text = "LS v1\nLS cp 0,0,0 2,4,2 strayLabel\nLS cp 10,0,0 2,4,2 another\nLS end";
     let track = decode_geometry(text).unwrap();
     assert_eq!(track.checkpoints.len(), 2);
     assert!(track.checkpoints.iter().all(|c| c.label.is_empty()));
@@ -1097,10 +1106,10 @@ fn decode_geometry_ignores_inline_label() {
 fn decode_geometry_tolerates_indentation_and_crlf() {
     // Leading indentation (formatter), CRLF endings, and a blank line
     // all survive: the decoder trims and skips them.
-    let text =
-        "  LS v1\r\n    LS title T\r\n\tLS cp 0,0,0 2,4,2\r\n  LS cp 10,0,0 2,4,2\r\n\r\nLS end";
+    let text = "  LS v1\r\n\tLS cp 0,0,0 2,4,2\r\n  LS cp 10,0,0 2,4,2\r\n\r\nLS end";
     let track = decode_geometry(text).unwrap();
-    assert_eq!(track.name, "T");
+    // Geometry-only: no title in the payload, so the name is empty.
+    assert!(track.name.is_empty());
     assert_eq!(track.checkpoints.len(), 2);
     assert_eq!(track.checkpoints[0].kind, CheckpointKind::Start);
     assert_eq!(track.checkpoints[1].kind, CheckpointKind::End);
@@ -1108,23 +1117,24 @@ fn decode_geometry_tolerates_indentation_and_crlf() {
 
 #[test]
 fn decode_geometry_rejects_missing_version() {
-    // Pre-version `.lss` payloads open with `LS title`; strict rejection
-    // is what makes them regenerate on the next save.
-    let text = "LS title T\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    // Pre-version `.lss` payloads led with a checkpoint (or `LS title`);
+    // strict rejection of a missing version is what makes them regenerate
+    // on the next save.
+    let text = "LS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("version line"), "{err}");
 }
 
 #[test]
 fn decode_geometry_rejects_unknown_version() {
-    let text = "LS v99\nLS title T\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    let text = "LS v99\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(err.contains("unsupported LS format version 99"), "{err}");
 }
 
 #[test]
 fn decode_geometry_rejects_version_not_first() {
-    let text = "LS title T\nLS v1\nLS cp 0,0,0 2,4,2\nLS cp 10,0,0 2,4,2\nLS end";
+    let text = "LS cp 0,0,0 2,4,2\nLS v1\nLS cp 10,0,0 2,4,2\nLS end";
     let err = decode_geometry(text).unwrap_err().to_string();
     assert!(
         err.contains("version line") || err.contains("must come first"),

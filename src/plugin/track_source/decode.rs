@@ -137,27 +137,30 @@ pub fn feed_chat_line(text: &str) -> FrameOutcome {
 }
 
 /// Batch-decode geometry-only `LS …` text (the `.lss` `ClassiCubeTrack`
-/// custom variable) into a label-less `Track`. Unlike [`feed_chat_line`]
-/// this is pure -- no thread-local state -- because the disk read runs
-/// off the main thread. Labels are intentionally dropped: they live in
-/// the `.lss` `<Segment>` elements and the storage layer re-attaches
-/// them.
+/// custom variable) into a label-less, name-less `Track`. Unlike
+/// [`feed_chat_line`] this is pure -- no thread-local state -- because the
+/// disk read runs off the main thread. Labels and the title are
+/// intentionally dropped: labels live in the `.lss` `<Segment>` elements
+/// and the title in `<CategoryName>`; the storage layer re-attaches both
+/// (the returned `Track.name` is empty and the caller overwrites it).
 ///
 /// Tolerant of hand-editing: a trailing `\r` (CRLF) and leading
 /// whitespace (formatter indentation) are stripped per line and blank
 /// lines are skipped. An inline label on a checkpoint line is ignored;
 /// a standalone `LS label` line is a parse error (labels don't belong in
-/// the geometry payload). Requires a leading `LS v<n>` version line
+/// the geometry payload). A `LS title` line is likewise a parse error
+/// (the title lives in the `.lss` `<CategoryName>`, not the payload) --
+/// this is what makes old title-bearing payloads fail cleanly and
+/// regenerate on the next save. Requires a leading `LS v<n>` version line
 /// matching this build's [`LS_FORMAT_VERSION`] (a missing or mismatched
 /// version is rejected -- pre-version files fail here and regenerate on
-/// the next save), then `LS title`, `LS end`, and at least 2
-/// checkpoints, then runs [`validate_pause_resume_pairing`]. Position
-/// implies kind: the first checkpoint becomes `Start`, `LS end` promotes
-/// the last `Split` to `End` (Pause/Resume can't be last), and a leading
-/// `LS pause` / `LS unpause` is rejected.
+/// the next save), then `LS end` and at least 2 checkpoints, then runs
+/// [`validate_pause_resume_pairing`]. Position implies kind: the first
+/// checkpoint becomes `Start`, `LS end` promotes the last `Split` to
+/// `End` (Pause/Resume can't be last), and a leading `LS pause` /
+/// `LS unpause` is rejected.
 pub fn decode_geometry(text: &str) -> Result<Track> {
     let mut version_seen = false;
-    let mut name: Option<String> = None;
     let mut checkpoints: Vec<Checkpoint> = Vec::new();
     let mut ended = false;
 
@@ -177,7 +180,7 @@ pub fn decode_geometry(text: &str) -> Result<Track> {
             Line::Version { version } => {
                 ensure!(!version_seen, "duplicate `LS v<n>` version line");
                 ensure!(
-                    name.is_none() && checkpoints.is_empty(),
+                    checkpoints.is_empty(),
                     "`LS v<n>` version line must come first"
                 );
                 ensure!(
@@ -187,17 +190,14 @@ pub fn decode_geometry(text: &str) -> Result<Track> {
                 );
                 version_seen = true;
             }
-            Line::Title { name: t } => {
-                ensure!(
-                    version_seen,
-                    "missing `LS v<n>` version line before `LS title`"
+            Line::Title { .. } => {
+                bail!(
+                    "unexpected `LS title` line in geometry payload (the title lives in the .lss \
+                     <CategoryName>, not the payload)"
                 );
-                ensure!(name.is_none(), "duplicate `LS title` line");
-                ensure!(checkpoints.is_empty(), "`LS title` after a checkpoint");
-                name = Some(t);
             }
             Line::Aabb { kind, aabb, .. } => {
-                ensure!(name.is_some(), "checkpoint before `LS title`");
+                ensure!(version_seen, "checkpoint before `LS v<n>` version line");
                 let kind = if checkpoints.is_empty() {
                     // First checkpoint is always Start; a leading
                     // `LS pause` / `LS unpause` would land here with a
@@ -218,7 +218,7 @@ pub fn decode_geometry(text: &str) -> Result<Track> {
                 });
             }
             Line::Map { name: map, .. } => {
-                ensure!(name.is_some(), "checkpoint before `LS title`");
+                ensure!(version_seen, "checkpoint before `LS v<n>` version line");
                 let kind = if checkpoints.is_empty() {
                     CheckpointKind::Start
                 } else {
@@ -231,7 +231,7 @@ pub fn decode_geometry(text: &str) -> Result<Track> {
                 });
             }
             Line::End => {
-                ensure!(name.is_some(), "`LS end` before `LS title`");
+                ensure!(version_seen, "`LS end` before `LS v<n>` version line");
                 ensure!(
                     checkpoints.len() >= 2,
                     "track needs at least 2 checkpoints before `LS end`"
@@ -255,10 +255,15 @@ pub fn decode_geometry(text: &str) -> Result<Track> {
         }
     }
 
-    let name = name.ok_or_else(|| anyhow!("missing `LS title` line"))?;
+    ensure!(version_seen, "missing `LS v<n>` version line");
     ensure!(ended, "missing `LS end` line");
 
-    let track = Track { name, checkpoints };
+    // The title comes from the `.lss` `<CategoryName>`, not the payload;
+    // the caller (`payload::parse`) overwrites this empty name.
+    let track = Track {
+        name: String::new(),
+        checkpoints,
+    };
     validate_pause_resume_pairing(&track)?;
     Ok(track)
 }
@@ -497,7 +502,7 @@ fn transition(state: &mut State, line: Line) -> FrameOutcome {
             // `encode_for_chat` would have rejected (e.g. operator
             // hand-writing `LS …` frames from a sign), so re-validate
             // before adopting. Drop to `Idle` on failure — the track is
-            // structurally broken; a fresh `LS title …` is the
+            // structurally broken; a fresh `LS v<n>` version line is the
             // recovery path.
             if let Err(e) = validate_pause_resume_pairing(&track) {
                 *state = State::Idle;
