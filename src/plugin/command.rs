@@ -51,7 +51,6 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit edit place [i] | cancel | select <i>");
     chat_print("&e  /client LiveSplit edit delete [i] | move <from> <to>");
     chat_print("&e  /client LiveSplit edit label <i> <text> | clear");
-    chat_print("&e  /client LiveSplit track encode");
     chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
     chat_print(
         "&e  /client LiveSplit nas               (copies all lines, \\n-separated, to clipboard)",
@@ -81,7 +80,7 @@ fn require_connected() -> bool {
 
 /// Encode the currently loaded track for chat delivery, chat-printing
 /// the standard error message on `None`/`Err` and returning `Some` only
-/// on success. Shared between the `track encode`, `mb`, and `nas` arms.
+/// on success. Shared between the `mb` and `nas` arms.
 fn encode_track_or_print_error() -> Option<Vec<String>> {
     match splits::current_track() {
         None => {
@@ -260,20 +259,6 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
             }
         }
         ["edit", "clear"] => editor::clear(),
-        ["track", "encode"] => {
-            if let Some(lines) = encode_track_or_print_error() {
-                let (name, n) = splits::current_track()
-                    .map(|t| (t.name, t.checkpoints.len()))
-                    .unwrap_or_default();
-                let l = lines.len();
-                chat_print(&format!(
-                    "&aLiveSplit: encoded track (\"{name}\", {n} checkpoints, {l} lines):"
-                ));
-                for line in &lines {
-                    chat_print(line);
-                }
-            }
-        }
         ["mb" | "messageblock", rest @ ..] if !rest.is_empty() => {
             if let Some(lines) = encode_track_or_print_error() {
                 let first = &lines[0];
@@ -341,7 +326,6 @@ impl CommandModule {
                     "&a/client LiveSplit edit on|off | place [i] | cancel | select <i>",
                     "&a/client LiveSplit edit delete [i] | move <from> <to>",
                     "&a/client LiveSplit edit label <i> <text> | clear",
-                    "&a/client LiveSplit track encode",
                     "&a/client LiveSplit mb <subcmd ...>",
                     "&a/client LiveSplit nas",
                 ],
