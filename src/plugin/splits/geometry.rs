@@ -191,6 +191,21 @@ pub struct Track {
     pub checkpoints: Vec<Checkpoint>,
 }
 
+/// Target for `edit kind <i> ...` ([`SplitsState::set_kind`]): either an
+/// AABB-trigger kind swap (`Split` / `Pause` / `Resume`, keeping the
+/// existing zone) or a conversion to a zoneless `MapLoaded` transition
+/// (dropping the zone; kind forced to `Split`).
+#[derive(Clone, Debug)]
+pub enum RetypeTarget {
+    /// `edit kind <i> split|pause|resume`: keep the zone, swap the kind.
+    /// Only `Split` / `Pause` / `Resume` are constructed by the caller;
+    /// the boundary rejection in `set_kind` backstops a stray Start/End.
+    Aabb(CheckpointKind),
+    /// `edit kind <i> map [name]`: drop the zone, become a `MapLoaded`
+    /// transition to `name`.
+    Map(String),
+}
+
 /// Short English name for a checkpoint kind, used in chat listings.
 pub(crate) fn kind_name(kind: CheckpointKind) -> &'static str {
     match kind {
@@ -487,6 +502,69 @@ impl SplitsState {
                 bail!("checkpoint #{i} is a map transition; only zone checkpoints can be redrawn");
             }
             cp.trigger = Trigger::Aabb(aabb);
+        }
+        self.rearm();
+        Ok(())
+    }
+
+    /// Retype the **middle** checkpoint at `i` (`edit kind <i> ...`).
+    /// Non-structural (the list length is unchanged, so no latch realloc
+    /// and no `re_derive_kinds`), but the kind / scope change invalidates
+    /// an in-progress run, so it `rearm()`s like [`set_trigger`].
+    ///
+    /// Two target shapes:
+    /// - [`RetypeTarget::Aabb`] swaps only the kind, keeping the existing
+    ///   zone. Rejected when `i` is currently a `MapLoaded` checkpoint (no
+    ///   zone to keep -- remove + re-add is the path).
+    /// - [`RetypeTarget::Map`] converts to a zoneless `Trigger::MapLoaded`
+    ///   (dropping any zone) and forces the kind to `Split` (a middle
+    ///   MapLoaded is always a Split). On an already-`MapLoaded`
+    ///   checkpoint this just renames the destination -- the only way to
+    ///   edit a transition's map name short of remove + re-add.
+    ///
+    /// Pause/Resume pairing is **not** validated here: like
+    /// `add_checkpoint` / `remove_checkpoint`, a retype may leave the
+    /// track temporarily unbalanced (e.g. a lone Pause while the matching
+    /// Resume is still being placed), so building a pause window
+    /// one checkpoint at a time isn't blocked. The full
+    /// [`validate_pause_resume_pairing`] runs at the save/load gates and
+    /// rejects a track that's still unbalanced. (Unlike `move_checkpoint`,
+    /// which validates eagerly because a reorder never changes Pause /
+    /// Resume *counts*.)
+    ///
+    /// `Err` if no track is loaded, `i` is out of range, `i` is a boundary
+    /// (Start / End), or an `Aabb` retype targets a `MapLoaded` checkpoint.
+    pub fn set_kind(&mut self, i: usize, target: RetypeTarget) -> Result<()> {
+        {
+            let Some(track) = self.track.as_mut() else {
+                bail!("no track loaded");
+            };
+            let n = track.checkpoints.len();
+            if i >= n {
+                bail!("checkpoint index {i} out of range (track has {n})");
+            }
+            if i == 0 || i + 1 == n {
+                bail!(
+                    "checkpoint #{i} is a boundary (Start/End); only middle checkpoints can be \
+                     retyped"
+                );
+            }
+            let cp = &mut track.checkpoints[i];
+            match target {
+                RetypeTarget::Aabb(kind) => {
+                    if matches!(cp.trigger, Trigger::MapLoaded(_)) {
+                        bail!(
+                            "checkpoint #{i} is a map transition (has no zone); remove it and add \
+                             a new zone checkpoint instead"
+                        );
+                    }
+                    cp.kind = kind;
+                }
+                RetypeTarget::Map(name) => {
+                    cp.trigger = Trigger::MapLoaded(name);
+                    cp.kind = CheckpointKind::Split;
+                }
+            }
         }
         self.rearm();
         Ok(())

@@ -21,7 +21,7 @@ use crate::{
         module::Module,
         pause_triggers,
         splits::geometry::{
-            Aabb, CheckpointKind, SplitsState, Track, observe_map, step,
+            Aabb, CheckpointKind, RetypeTarget, SplitsState, Track, observe_map, step,
             validate_pause_resume_pairing,
         },
     },
@@ -520,6 +520,31 @@ pub fn editor_relocate(i: usize, aabb: Aabb) -> bool {
         Some(Ok(())) => {
             reset_timer_if_was_running(was_in_progress);
             chat_print(&format!("&aLiveSplit: redrew checkpoint #{i}"));
+            true
+        }
+    }
+}
+
+/// Retype the checkpoint at `i` (`edit kind <i> ...`). Like
+/// [`editor_relocate`], samples run-progress before the mutation (which
+/// re-arms the cursor) and notifies a connected timer if it aborted a
+/// run. Pairing isn't validated here -- the mutator defers it to the
+/// save/load gates (see [`geometry::SplitsState::set_kind`]). Returns
+/// `true` on success.
+pub fn editor_set_kind(i: usize, target: RetypeTarget) -> bool {
+    let was_in_progress = run_in_progress();
+    match with_state(|s| s.set_kind(i, target)) {
+        None => {
+            chat_print("&eLiveSplit: plugin not active");
+            false
+        }
+        Some(Err(e)) => {
+            chat_print(&format!("&cLiveSplit: cannot retype checkpoint: {e}"));
+            false
+        }
+        Some(Ok(())) => {
+            reset_timer_if_was_running(was_in_progress);
+            chat_print(&format!("&aLiveSplit: retyped checkpoint #{i}"));
             true
         }
     }

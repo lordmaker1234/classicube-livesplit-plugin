@@ -26,7 +26,10 @@ use crate::{
     chat_print,
     plugin::{
         module::Module,
-        splits::{self, geometry},
+        splits::{
+            self,
+            geometry::{self, CheckpointKind, RetypeTarget},
+        },
     },
 };
 
@@ -172,6 +175,26 @@ pub fn set_label(i: usize, text: String) {
 /// it doesn't gate on edit mode.
 pub fn reindex(from: usize, to: usize) {
     splits::editor_reindex(from, to);
+}
+
+/// `edit kind <i> split|pause|resume`. Retype an existing AABB
+/// checkpoint, keeping its zone. No arming / block clicks (purely
+/// index-based), so -- like `remove` / `label` / `move` -- it doesn't
+/// gate on edit mode.
+pub fn set_kind(i: usize, kind: CheckpointKind) {
+    splits::editor_set_kind(i, RetypeTarget::Aabb(kind));
+}
+
+/// `edit kind <i> map [name]`. Convert checkpoint #i into a zoneless map
+/// transition. `name` defaults to the live world (`splits::current_map`);
+/// errors in chat if a name is neither given nor resolvable.
+pub fn set_kind_map(i: usize, name: Option<String>) {
+    match name.or_else(splits::current_map) {
+        Some(n) => {
+            splits::editor_set_kind(i, RetypeTarget::Map(n));
+        }
+        None => chat_print("&cLiveSplit: no map name given and current map is unknown"),
+    }
 }
 
 /// `edit clear`. Drop the loaded track and reset editor state so the

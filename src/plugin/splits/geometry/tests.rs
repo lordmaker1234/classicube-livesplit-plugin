@@ -1479,6 +1479,155 @@ fn set_trigger_rejects_out_of_range() {
     );
 }
 
+// ---- set_kind (edit kind retype) ----
+
+#[test]
+fn set_kind_retypes_middle_split_to_pause() {
+    use CheckpointKind::{End, Pause, Split, Start};
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string())); // Start, Split, Split, End
+    state.set_kind(1, RetypeTarget::Aabb(Pause)).unwrap();
+    assert_eq!(kinds(&state), vec![Start, Pause, Split, End]);
+    // Only the kind changed; the zone is kept.
+    let t = state.track.as_ref().unwrap();
+    assert!(matches!(t.checkpoints[1].trigger, Trigger::Aabb(_)));
+    // Rearmed.
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false; 4]);
+}
+
+#[test]
+fn set_kind_to_resume_allowed_pairing_deferred() {
+    // A retype that leaves the track temporarily unbalanced (lone Resume)
+    // is NOT blocked at mutation time -- pairing is deferred to the
+    // save/load gates, mirroring add/remove. The mutator returns Ok; the
+    // gate is what catches it.
+    use CheckpointKind::{End, Resume, Split, Start};
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    state.set_kind(2, RetypeTarget::Aabb(Resume)).unwrap();
+    assert_eq!(kinds(&state), vec![Start, Split, Resume, End]);
+    assert!(
+        validate_pause_resume_pairing(state.track.as_ref().unwrap()).is_err(),
+        "the lone Resume is caught by the save/load gate, not the mutator",
+    );
+}
+
+#[test]
+fn set_kind_build_balanced_pause_pair_incrementally() {
+    // The intended workflow: retype one Split to Pause and a later one to
+    // Resume. Each step is allowed (deferred), and the finished track
+    // validates clean.
+    use CheckpointKind::{End, Pause, Resume, Split, Start};
+    let mut state = SplitsState::default();
+    state.load(
+        track_with_kinds(&[Start, Split, Split, Split, End]),
+        Some(TEST_MAP.to_string()),
+    );
+    state.set_kind(1, RetypeTarget::Aabb(Pause)).unwrap();
+    state.set_kind(2, RetypeTarget::Aabb(Resume)).unwrap();
+    assert_eq!(kinds(&state), vec![Start, Pause, Resume, Split, End]);
+    validate_pause_resume_pairing(state.track.as_ref().unwrap()).unwrap();
+}
+
+#[test]
+fn set_kind_rearms_run() {
+    use CheckpointKind::Pause;
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    // Pretend a run is mid-flight.
+    state.next_index = 2;
+    state.fired = vec![true, true, false, false];
+    state.last_inside = vec![true, false, false, false];
+    state.set_kind(1, RetypeTarget::Aabb(Pause)).unwrap();
+    // Like set_trigger, a retype re-arms the run.
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false; 4]);
+    assert_eq!(state.last_inside, vec![false; 4]);
+}
+
+#[test]
+fn set_kind_rejects_boundary() {
+    use CheckpointKind::{End, Pause, Split, Start};
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4
+    // Index 0 (Start) and the last index (End) can't be retyped.
+    assert!(state.set_kind(0, RetypeTarget::Aabb(Pause)).is_err());
+    assert!(state.set_kind(3, RetypeTarget::Aabb(Pause)).is_err());
+    // Track unchanged.
+    assert_eq!(kinds(&state), vec![Start, Split, Split, End]);
+}
+
+#[test]
+fn set_kind_rejects_out_of_range() {
+    use CheckpointKind::Pause;
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    assert!(state.set_kind(99, RetypeTarget::Aabb(Pause)).is_err());
+}
+
+#[test]
+fn set_kind_split_to_map_drops_zone() {
+    use CheckpointKind::Split;
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    state.set_kind(1, RetypeTarget::Map("next".into())).unwrap();
+    let t = state.track.as_ref().unwrap();
+    assert!(matches!(t.checkpoints[1].trigger, Trigger::MapLoaded(ref n) if n == "next"));
+    // A middle MapLoaded is always a Split.
+    assert_eq!(t.checkpoints[1].kind, Split);
+    // Rearmed.
+    assert_eq!(state.next_index, 0);
+}
+
+#[test]
+fn set_kind_map_to_aabb_kind_rejected_no_zone() {
+    use CheckpointKind::{End, Split, Start};
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp_map(Split, "mid"), // idx 1, MapLoaded -- no zone
+            cp(End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some(TEST_MAP.to_string()));
+    // Retyping a zoneless MapLoaded to an AABB kind has no zone to assign.
+    assert!(state.set_kind(1, RetypeTarget::Aabb(Split)).is_err());
+    // Untouched.
+    let t = state.track.as_ref().unwrap();
+    assert!(matches!(t.checkpoints[1].trigger, Trigger::MapLoaded(ref n) if n == "mid"));
+}
+
+#[test]
+fn set_kind_map_rename() {
+    use CheckpointKind::{End, Split, Start};
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp_map(Split, "a"), // idx 1
+            cp(End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)),
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some(TEST_MAP.to_string()));
+    // map on an already-MapLoaded checkpoint renames the destination.
+    state.set_kind(1, RetypeTarget::Map("b".into())).unwrap();
+    let t = state.track.as_ref().unwrap();
+    assert!(matches!(t.checkpoints[1].trigger, Trigger::MapLoaded(ref n) if n == "b"));
+    assert_eq!(t.checkpoints[1].kind, Split);
+}
+
+#[test]
+fn set_kind_errors_without_track() {
+    use CheckpointKind::Split;
+    let mut state = SplitsState::default();
+    assert!(state.set_kind(1, RetypeTarget::Aabb(Split)).is_err());
+    assert!(state.set_kind(1, RetypeTarget::Map("x".into())).is_err());
+}
+
 #[test]
 fn mutation_methods_error_without_track() {
     let mut state = SplitsState::default();

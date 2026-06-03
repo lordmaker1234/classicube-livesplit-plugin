@@ -11,7 +11,8 @@ use crate::{
         livesplit::{self, Command as LsCommand, protocol::TimingMethod},
         lss_storage,
         module::Module,
-        pause_triggers, splits,
+        pause_triggers,
+        splits::{self, geometry::CheckpointKind},
         track_source::encode::encode_for_chat,
     },
 };
@@ -51,6 +52,7 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit edit on|off");
     chat_print("&e  /client LiveSplit edit add [i] | redraw <i> | cancel");
     chat_print("&e  /client LiveSplit edit remove <i> | move <from> <to>");
+    chat_print("&e  /client LiveSplit edit kind <i> split|pause|resume|map [name]");
     chat_print("&e  /client LiveSplit edit label <i> <text> | clear");
     chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
     chat_print(
@@ -114,6 +116,15 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
     debug!(?args, "chat command");
+
+    // `edit kind <i> split|pause|resume`: parse the index, then dispatch
+    // the AABB-kind retype. The `map` variant has its own arms (it takes
+    // an optional name, not a `CheckpointKind`).
+    let kind_arm = |i: &str, kind: CheckpointKind| {
+        if let Some(idx) = parse_index(i) {
+            editor::set_kind(idx, kind);
+        }
+    };
 
     match args.as_slice() {
         ["status"] => {
@@ -254,6 +265,19 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                 editor::arm_redraw(idx);
             }
         }
+        ["edit", "kind", i, "split"] => kind_arm(i, CheckpointKind::Split),
+        ["edit", "kind", i, "pause"] => kind_arm(i, CheckpointKind::Pause),
+        ["edit", "kind", i, "resume"] => kind_arm(i, CheckpointKind::Resume),
+        ["edit", "kind", i, "map"] => {
+            if let Some(idx) = parse_index(i) {
+                editor::set_kind_map(idx, None);
+            }
+        }
+        ["edit", "kind", i, "map", name] => {
+            if let Some(idx) = parse_index(i) {
+                editor::set_kind_map(idx, Some((*name).to_owned()));
+            }
+        }
         ["edit", "label", i, rest @ ..] if !rest.is_empty() => {
             if let Some(idx) = parse_index(i) {
                 editor::set_label(idx, rest.join(" "));
@@ -327,6 +351,7 @@ impl CommandModule {
                     "&a/client LiveSplit show [on|off]",
                     "&a/client LiveSplit edit on|off | add [i] | redraw <i> | cancel",
                     "&a/client LiveSplit edit remove <i> | move <from> <to>",
+                    "&a/client LiveSplit edit kind <i> split|pause|resume|map [name]",
                     "&a/client LiveSplit edit label <i> <text> | clear",
                     "&a/client LiveSplit mb <subcmd ...>",
                     "&a/client LiveSplit nas",
