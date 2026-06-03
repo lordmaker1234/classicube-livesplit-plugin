@@ -2,10 +2,10 @@
 //!
 //! The boxes are engine selection cuboids (see the parent module) and can't
 //! carry text -- the CPE label slot is parsed off the packet and discarded.
-//! This layer adds real GPU text: per checkpoint, a white drop-shadowed
-//! texture of its `label` string, drawn each frame as a camera-facing
-//! billboard anchored just above its box (occluded by terrain, shrinking
-//! with distance).
+//! This layer adds real GPU text: per checkpoint, a drop-shadowed texture of
+//! its `<label> (<kind>)` annotation tinted to the box's kind hue, drawn each
+//! frame as a camera-facing billboard anchored just above its box (occluded
+//! by terrain, shrinking with distance).
 //!
 //! Split across three submodules:
 //! - [`texture`] -- label string to `OwnedTexture` (lazy font, transparent
@@ -16,13 +16,17 @@
 //!
 //! The cache is driven by the same tick + `SHOW` + map-scoped
 //! `splits::visible_aabbs()` data the boxes use: [`reconcile`] rebuilds the
-//! texture set only when the visible `(kind, aabb, label)` set changes, so a
-//! map crossing (which changes the scoped set) invalidates the cache for free
-//! and label-only edits to off-screen checkpoints don't churn it.
+//! texture set only when the visible `(kind, aabb, label, is_next)` set
+//! changes, so a map crossing (which changes the scoped set) invalidates the
+//! cache for free and label-only edits to off-screen checkpoints don't churn
+//! it. Each label is tinted to its `kind` hue (matching the box color).
 
 mod context;
 mod render;
 mod texture;
+
+#[cfg(test)]
+mod tests;
 
 use std::cell::RefCell;
 
@@ -33,7 +37,7 @@ use tracing::debug;
 use super::HUD_ID_COUNT;
 use crate::plugin::{
     module::Module,
-    splits::geometry::{Aabb, CheckpointKind},
+    splits::geometry::{Aabb, CheckpointKind, kind_name},
 };
 
 /// Vertical gap (in blocks) between the top of a box and the bottom of its
@@ -129,10 +133,11 @@ impl Module for LabelsModule {
 
 /// Rebuild the cached label textures to match `visible` (the map-scoped
 /// `(kind, aabb, label, is_next)` set, already capped/derived by the splits
-/// layer). No-op when `visible` equals the cached set. The `kind` is unused
-/// for drawing (non-next labels are plain white regardless) but is part of
-/// the diff key so the cache tracks the boxes exactly; `is_next` drives the
-/// `> ` marker + highlight color on the run's next-target label.
+/// layer). No-op when `visible` equals the cached set. The `kind` drives the
+/// label color (matching the box hue) and the ` (<kind>)` suffix via
+/// [`display_label`]; `is_next` adds the `> ` marker on the run's next-target
+/// label. Both are part of the diff key so the cache tracks the boxes
+/// exactly.
 pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
     // While the GPU context is lost we can't (re)build textures. Leave the
     // cache exactly as `context::context_lost`'s `invalidate()` left it
@@ -150,21 +155,8 @@ pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
     // actually draw (the parent reconcile zips installs against the same
     // range).
     let mut labels = Vec::new();
-    for (_kind, aabb, label, is_next) in visible.iter().take(HUD_ID_COUNT) {
-        // The next-target checkpoint always shows a cue: a "> " marker in
-        // the highlight color, prepended to its label (or standing alone
-        // when the label is empty). The marker is positional, so it
-        // composes with a future kind-colored label format; only the
-        // fixed `&e` color would need revisiting when that lands.
-        let display = if *is_next {
-            format!("&e> {label}")
-        } else if label.is_empty() {
-            // Nothing to draw; the box still shows. Cached below so this
-            // doesn't churn every tick.
-            continue;
-        } else {
-            label.clone()
-        };
+    for (kind, aabb, label, is_next) in visible.iter().take(HUD_ID_COUNT) {
+        let display = display_label(*kind, label, *is_next);
         let Some(tex) = texture::create_label_texture(&display) else {
             continue;
         };
@@ -193,6 +185,38 @@ pub(super) fn reconcile(visible: &[(CheckpointKind, Aabb, String, bool)]) {
         last.extend_from_slice(visible);
     });
     debug!(count, "rebuilt floating checkpoint labels");
+}
+
+/// Build the floating display string for a checkpoint: the raw `label` (when
+/// set) plus a ` (<kind>)` suffix, tinted to the box's kind hue. The run's
+/// next-target gets a leading `&e> ` marker (yellow positional cue that
+/// composes with the kind color following it). Unlabeled checkpoints still
+/// render `(<kind>)` so every box is identifiable. The kind color is
+/// re-asserted before the suffix so a label carrying its own `&` codes can't
+/// bleed into the annotation.
+fn display_label(kind: CheckpointKind, label: &str, is_next: bool) -> String {
+    let code = kind_color_code(kind);
+    let name = kind_name(kind).to_ascii_lowercase();
+    let body = if label.is_empty() {
+        format!("{code}({name})")
+    } else {
+        format!("{code}{label} {code}({name})")
+    };
+    if is_next { format!("&e> {body}") } else { body }
+}
+
+/// The `&`-code whose hue matches `boxes::color_for_kind`'s `PackedCol` for
+/// this kind (hud/boxes.rs). The two hue tables are deliberately separate
+/// (PackedCol vs `&`-code, different types); keep them in sync if a hue ever
+/// changes.
+fn kind_color_code(kind: CheckpointKind) -> &'static str {
+    match kind {
+        CheckpointKind::Start => "&a",  // green  (0,255,0)
+        CheckpointKind::Split => "&e",  // yellow (255,255,0)
+        CheckpointKind::Pause => "&b",  // cyan   (0,200,255)
+        CheckpointKind::Resume => "&6", // orange (255,140,0)
+        CheckpointKind::End => "&c",    // red    (255,0,0)
+    }
 }
 
 /// Drop the cached textures and the diff key, forcing the next [`reconcile`]

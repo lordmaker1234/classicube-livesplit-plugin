@@ -59,7 +59,8 @@ pub(super) fn free() {
 ///   (`OwnedTexture::new` returns `None`).
 ///
 /// Color codes in the label render natively via `Drawer2D`; `useShadow`
-/// adds a drop shadow so white text stays legible against any backdrop.
+/// adds a drop shadow so the (kind-colored) text stays legible against any
+/// backdrop.
 pub(super) fn create_label_texture(label: &str) -> Option<OwnedTexture> {
     if unsafe { Gfx.LostContext } != 0 {
         return None;
