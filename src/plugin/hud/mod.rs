@@ -28,7 +28,7 @@ use std::cell::Cell;
 use classicube_helpers::tick::TickEventHandler;
 
 use self::{boxes::BoxesModule, labels::LabelsModule};
-use crate::plugin::{module::Module, splits};
+use crate::plugin::{editor, module::Module, splits};
 
 /// Private selection-id range for plugin-owned checkpoint boxes. Server
 /// commands (`/zone`, `/measure`) allocate selection ids from 0 upward,
@@ -99,11 +99,23 @@ impl Module for HudModule {
 /// to nothing. Sharing one fetch keeps the two layers on the same snapshot
 /// within a frame.
 fn reconcile() {
-    let visible = if SHOW.get() {
+    let mut visible = if SHOW.get() {
         splits::visible_aabbs()
     } else {
         Vec::new()
     };
+
+    // Authoring view: there's no live run to target, so drop the
+    // next-checkpoint highlight (the brighter box + the `> <` label marker).
+    // Without this the idle cursor (next_index == 0) would keep flagging
+    // Start, and the always-present edit-mode label body means the marker
+    // would never self-suppress. Both child diff keys track this bool, so
+    // clearing it re-renders them on the edit-mode toggle.
+    if editor::is_enabled() {
+        for entry in &mut visible {
+            entry.4 = false;
+        }
+    }
 
     boxes::reconcile(&visible);
     labels::reconcile(&visible);

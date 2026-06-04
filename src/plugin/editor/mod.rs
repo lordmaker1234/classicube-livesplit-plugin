@@ -101,6 +101,14 @@ pub fn set_enabled(on: bool) {
         hook::install();
         chat_print("&aLiveSplit: edit mode ON");
         chat_print("&e  /client LiveSplit edit add, then click two blocks for a checkpoint");
+        // Authoring isn't a timed attempt: abandon any in-progress run so
+        // editing starts from a clean idle cursor. Sample run-progress before
+        // rearming (which zeroes the cursor) so a connected timer mid-run
+        // gets reset too. `reset_timer_if_was_running` is a silent no-op when
+        // nothing was running / no timer is attached.
+        let was_in_progress = splits::run_in_progress();
+        splits::reset_run();
+        splits::reset_timer_if_was_running(was_in_progress);
     } else {
         hook::uninstall();
         chat_print("&aLiveSplit: edit mode OFF");

@@ -218,9 +218,11 @@ pub(super) fn reconcile(visible: &[VisibleEntry]) {
 /// empty string -- `create_label_texture` returns `None` for a zero-width
 /// string, so the label is simply skipped.
 ///
-/// In both modes the run's next-target gets a leading `&e> ` marker (yellow
-/// positional cue). The marker is suppressed when the body is empty so we
-/// don't draw a lone `> `.
+/// During normal play the run's next-target gets a leading `&e> ` marker
+/// (yellow positional cue). The marker is suppressed when the body is empty
+/// so we don't draw a lone `> `. In edit mode the HUD coordinator clears the
+/// is-next flag before calling [`reconcile`], so the marker never appears
+/// while authoring.
 fn display_label(
     kind: CheckpointKind,
     index: usize,

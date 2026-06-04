@@ -242,15 +242,21 @@ pub(crate) fn kind_color_code(kind: CheckpointKind) -> &'static str {
 }
 
 /// Render the loaded track as chat lines for `/client LiveSplit splits`: a
-/// header line plus one line per checkpoint, in track order. `fired` and
-/// `next_index` come straight off [`SplitsState`]. Each row is colored by
-/// checkpoint kind (matching the HUD), with the next checkpoint's marker
-/// highlighted as `&e> ... &e<`. The marker char conveys run status: `x`
-/// (fired) or blank (pending) for non-next rows. The kind column shows the kind name for
-/// an `Aabb` trigger or `Map` for a `MapLoaded` map-transition; the quoted
-/// text is always the checkpoint's label.
+/// header line plus one line per checkpoint, in track order. `fired` comes
+/// straight off [`SplitsState`]; `next_index` is `Some(i)` for the run's
+/// next-target row (highlighted `&e> ... &e<`) or `None` to suppress the
+/// marker entirely (edit mode -- there's no live run to target). Each row is
+/// colored by checkpoint kind (matching the HUD). The marker char conveys
+/// run status: `x` (fired) or blank (pending) for non-next rows. The kind
+/// column shows the kind name for an `Aabb` trigger or `Map` for a
+/// `MapLoaded` map-transition; the quoted text is always the checkpoint's
+/// label.
 #[must_use]
-pub(crate) fn format_splits(track: &Track, fired: &[bool], next_index: usize) -> Vec<String> {
+pub(crate) fn format_splits(
+    track: &Track,
+    fired: &[bool],
+    next_index: Option<usize>,
+) -> Vec<String> {
     let total = track.checkpoints.len();
     let fired_count = fired.iter().filter(|b| **b).count();
     let mut lines = Vec::with_capacity(total + 1);
@@ -265,7 +271,7 @@ pub(crate) fn format_splits(track: &Track, fired: &[bool], next_index: usize) ->
             Trigger::MapLoaded(_) => "Map",
         };
         let label = &cp.label;
-        lines.push(if i == next_index {
+        lines.push(if Some(i) == next_index {
             // Wrap the next-target row like the HUD label: `&e> {body} &e<`.
             format!("&e> #{i} {code}{kind_col:<6} \"{label}\" &e<")
         } else {

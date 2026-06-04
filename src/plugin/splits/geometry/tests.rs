@@ -1861,7 +1861,7 @@ fn format_splits_lists_each_checkpoint_with_markers() {
     };
     // Checkpoint 0 fired; run cursor sits on index 1 (the next target).
     let fired = [true, false, false, false];
-    let lines = format_splits(&track, &fired, 1);
+    let lines = format_splits(&track, &fired, Some(1));
     assert_eq!(
         lines,
         vec![
@@ -1871,6 +1871,51 @@ fn format_splits_lists_each_checkpoint_with_markers() {
             "&e   #2 &eMap    \"tower2\"".to_string(),
             "&c   #3 &cEnd    \"finish\"".to_string(),
         ]
+    );
+}
+
+// In edit mode `print_splits` passes `None`, so no row is bracketed as the
+// run's next target -- every row uses the plain `x`/blank marker form (the
+// former next row included).
+#[test]
+fn format_splits_none_next_index_suppresses_marker() {
+    let track = Track {
+        name: "doubletower".into(),
+        checkpoints: vec![
+            Checkpoint {
+                kind: CheckpointKind::Start,
+                trigger: Trigger::Aabb(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))),
+                label: "spawn".into(),
+            },
+            Checkpoint {
+                kind: CheckpointKind::Split,
+                trigger: Trigger::Aabb(aabb((10.0, 0.0, 0.0), (11.0, 1.0, 1.0))),
+                label: "midpoint".into(),
+            },
+            Checkpoint {
+                kind: CheckpointKind::End,
+                trigger: Trigger::Aabb(aabb((20.0, 0.0, 0.0), (21.0, 1.0, 1.0))),
+                label: "finish".into(),
+            },
+        ],
+    };
+    // Even though the cursor sits on index 1, `None` drops the highlight.
+    let fired = [true, false, false];
+    let lines = format_splits(&track, &fired, None);
+    assert_eq!(
+        lines,
+        vec![
+            "&aLiveSplit: track \"doubletower\" (3 checkpoints, 1 fired)".to_string(),
+            "&a x #0 &aStart  \"spawn\"".to_string(),
+            "&e   #1 &eSplit  \"midpoint\"".to_string(),
+            "&c   #2 &cEnd    \"finish\"".to_string(),
+        ]
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|l| !l.contains("&e>") && !l.contains("&e<")),
+        "no row should carry the next-target bracket"
     );
 }
 
@@ -1905,7 +1950,7 @@ fn format_splits_pause_resume_kinds_use_correct_color_codes() {
     };
     // Checkpoints 0 and 1 fired; cursor on 2 (Resume -- next, yellow marker).
     let fired = [true, true, false, false];
-    let lines = format_splits(&track, &fired, 2);
+    let lines = format_splits(&track, &fired, Some(2));
     assert_eq!(
         lines,
         vec![

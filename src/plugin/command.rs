@@ -215,7 +215,7 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
             }
         }
         ["loadtest"] => splits::load_fixture(),
-        ["splits"] => splits::print_splits(),
+        ["splits"] => splits::print_splits(editor::is_enabled()),
         ["clear"] => splits::clear_track(),
         ["save"] => lss_storage::save_current_track(),
         ["load"] => lss_storage::load_track_command(None),

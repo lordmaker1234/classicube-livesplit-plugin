@@ -603,12 +603,15 @@ pub fn clear_track() {
 
 /// Chat-print the full checkpoint list for `/client LiveSplit splits`: a
 /// header line plus one line per checkpoint (see
-/// [`geometry::format_splits`]).
-pub fn print_splits() {
+/// [`geometry::format_splits`]). `suppress_next` hides the next-target
+/// `&e> ... &e<` marker -- passed `true` in edit mode, where there's no live
+/// run to target.
+pub fn print_splits(suppress_next: bool) {
     let Some(lines) = with_state(|s| {
+        let next = (!suppress_next).then_some(s.next_index);
         s.track
             .as_ref()
-            .map(|t| geometry::format_splits(t, &s.fired, s.next_index))
+            .map(|t| geometry::format_splits(t, &s.fired, next))
     }) else {
         chat_print("&eLiveSplit: plugin not active");
         return;
