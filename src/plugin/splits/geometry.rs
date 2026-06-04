@@ -245,8 +245,8 @@ pub(crate) fn kind_color_code(kind: CheckpointKind) -> &'static str {
 /// header line plus one line per checkpoint, in track order. `fired` and
 /// `next_index` come straight off [`SplitsState`]. Each row is colored by
 /// checkpoint kind (matching the HUD), with the next checkpoint's marker
-/// highlighted yellow (`>`). The marker char conveys run status: `>` (next),
-/// `x` (fired), or blank (pending). The kind column shows the kind name for
+/// highlighted as `&e> ... &e<`. The marker char conveys run status: `x`
+/// (fired) or blank (pending) for non-next rows. The kind column shows the kind name for
 /// an `Aabb` trigger or `Map` for a `MapLoaded` map-transition; the quoted
 /// text is always the checkpoint's label.
 #[must_use]
@@ -260,23 +260,23 @@ pub(crate) fn format_splits(track: &Track, fired: &[bool], next_index: usize) ->
     ));
     for (i, cp) in track.checkpoints.iter().enumerate() {
         let code = kind_color_code(cp.kind);
-        // Next wins over fired (they can't both apply for one index, but
-        // order the check so the run's target always reads as `>`).
-        let (marker_color, marker) = if i == next_index {
-            ("&e", '>') // yellow next marker, like the HUD's `&e> ` label prefix
-        } else if fired.get(i).copied().unwrap_or(false) {
-            (code, 'x')
-        } else {
-            (code, ' ')
-        };
         let kind_col = match cp.trigger {
             Trigger::Aabb(_) => kind_name(cp.kind),
             Trigger::MapLoaded(_) => "Map",
         };
         let label = &cp.label;
-        lines.push(format!(
-            "{marker_color} {marker} #{i} {code}{kind_col:<6} \"{label}\""
-        ));
+        lines.push(if i == next_index {
+            // Wrap the next-target row like the HUD label: `&e> {body} &e<`.
+            format!("&e> #{i} {code}{kind_col:<6} \"{label}\" &e<")
+        } else {
+            // Next wins over fired; marker char conveys status (x = fired, blank = pending).
+            let marker = if fired.get(i).copied().unwrap_or(false) {
+                'x'
+            } else {
+                ' '
+            };
+            format!("{code} {marker} #{i} {code}{kind_col:<6} \"{label}\"")
+        });
     }
     lines
 }

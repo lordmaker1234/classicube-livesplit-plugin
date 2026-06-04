@@ -1835,7 +1835,7 @@ fn format_splits_lists_each_checkpoint_with_markers() {
         vec![
             "&aLiveSplit: track \"doubletower\" (4 checkpoints, 1 fired)".to_string(),
             "&a x #0 &aStart  \"spawn\"".to_string(),
-            "&e > #1 &eSplit  \"midpoint\"".to_string(),
+            "&e> #1 &eSplit  \"midpoint\" &e<".to_string(),
             "&e   #2 &eMap    \"tower2\"".to_string(),
             "&c   #3 &cEnd    \"finish\"".to_string(),
         ]
@@ -1880,7 +1880,7 @@ fn format_splits_pause_resume_kinds_use_correct_color_codes() {
             "&aLiveSplit: track \"paused run\" (4 checkpoints, 2 fired)".to_string(),
             "&a x #0 &aStart  \"start\"".to_string(),
             "&b x #1 &bPause  \"pause zone\"".to_string(),
-            "&e > #2 &6Resume \"resume zone\"".to_string(),
+            "&e> #2 &6Resume \"resume zone\" &e<".to_string(),
             "&c   #3 &cEnd    \"end\"".to_string(),
         ]
     );

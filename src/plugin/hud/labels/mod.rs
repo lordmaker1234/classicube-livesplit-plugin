@@ -245,7 +245,7 @@ fn display_label(
         format!("{code}{label}")
     };
     if is_next && !body.is_empty() {
-        format!("&e> {body}")
+        format!("&e> {body} &e<")
     } else {
         body
     }

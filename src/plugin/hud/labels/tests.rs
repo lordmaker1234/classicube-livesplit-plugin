@@ -22,7 +22,7 @@ fn display_label_edit_empty_non_next_shows_index_and_kind() {
 fn display_label_edit_labeled_next_prefixes_marker() {
     assert_eq!(
         display_label(CheckpointKind::End, 3, "final", true, true),
-        "&e> &c3: final &c(end)"
+        "&e> &c3: final &c(end) &e<"
     );
 }
 
@@ -30,7 +30,7 @@ fn display_label_edit_labeled_next_prefixes_marker() {
 fn display_label_edit_empty_next() {
     assert_eq!(
         display_label(CheckpointKind::Pause, 2, "", true, true),
-        "&e> &b2: (pause)"
+        "&e> &b2: (pause) &e<"
     );
 }
 
@@ -56,7 +56,7 @@ fn display_label_play_labeled_non_next() {
 fn display_label_play_labeled_next_prefixes_marker() {
     assert_eq!(
         display_label(CheckpointKind::End, 3, "final", true, false),
-        "&e> &cfinal"
+        "&e> &cfinal &e<"
     );
 }
 
