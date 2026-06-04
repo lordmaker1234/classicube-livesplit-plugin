@@ -1872,16 +1872,19 @@ fn format_splits_lists_each_checkpoint_with_markers() {
                 trigger: Trigger::Aabb(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))),
                 label: "spawn".into(),
             },
+            // A multi-block box: the detail shows min + size `(10,0,0 3,2,5)`,
+            // not the max corner `(13,2,5)`.
             Checkpoint {
                 kind: CheckpointKind::Split,
-                trigger: Trigger::Aabb(aabb((10.0, 0.0, 0.0), (11.0, 1.0, 1.0))),
+                trigger: Trigger::Aabb(aabb((10.0, 0.0, 0.0), (13.0, 2.0, 5.0))),
                 label: "midpoint".into(),
             },
-            // A `MapLoaded` trigger renders `Map` in the kind column.
+            // A `MapLoaded` trigger renders `Map (name) "label"` -- the map
+            // name in dim parens before the quoted label (they're independent).
             Checkpoint {
                 kind: CheckpointKind::Split,
                 trigger: Trigger::MapLoaded("tower2".into()),
-                label: "tower2".into(),
+                label: "Second Tower".into(),
             },
             Checkpoint {
                 kind: CheckpointKind::End,
@@ -1897,10 +1900,48 @@ fn format_splits_lists_each_checkpoint_with_markers() {
         lines,
         vec![
             "&aLiveSplit: track \"doubletower\" (4 checkpoints, 1 fired)".to_string(),
-            "&a x #0 &aStart  \"spawn\"".to_string(),
-            "&e> #1 &eSplit  \"midpoint\" &e<".to_string(),
-            "&e   #2 &eMap    \"tower2\"".to_string(),
-            "&c   #3 &cEnd    \"finish\"".to_string(),
+            "&a x #0 &aStart &7(0,0,0 1,1,1) &a\"spawn\"".to_string(),
+            "&e> #1 &eSplit &7(10,0,0 3,2,5) &e\"midpoint\" &e<".to_string(),
+            "&e   #2 &eMap &7(tower2) &e\"Second Tower\"".to_string(),
+            "&c   #3 &cEnd &7(20,0,0 1,1,1) &c\"finish\"".to_string(),
+        ]
+    );
+}
+
+// A `MapLoaded` row that is the run's next target must carry the dim-paren
+// map name inside the `&e> ... &e<` bracket, not after it.
+#[test]
+fn format_splits_map_loaded_next_target_shows_map_name_in_bracket() {
+    let track = Track {
+        name: "multi-map".into(),
+        checkpoints: vec![
+            Checkpoint {
+                kind: CheckpointKind::Start,
+                trigger: Trigger::Aabb(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))),
+                label: "start".into(),
+            },
+            Checkpoint {
+                kind: CheckpointKind::Split,
+                trigger: Trigger::MapLoaded("novacity".into()),
+                label: "Nova City".into(),
+            },
+            Checkpoint {
+                kind: CheckpointKind::End,
+                trigger: Trigger::Aabb(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0))),
+                label: "end".into(),
+            },
+        ],
+    };
+    // Start fired; map-transition is the next target.
+    let fired = [true, false, false];
+    let lines = format_splits(&track, &fired, Some(1));
+    assert_eq!(
+        lines,
+        vec![
+            "&aLiveSplit: track \"multi-map\" (3 checkpoints, 1 fired)".to_string(),
+            "&a x #0 &aStart &7(0,0,0 1,1,1) &a\"start\"".to_string(),
+            "&e> #1 &eMap &7(novacity) &e\"Nova City\" &e<".to_string(),
+            "&c   #2 &cEnd &7(5,0,0 1,1,1) &c\"end\"".to_string(),
         ]
     );
 }
@@ -1937,9 +1978,9 @@ fn format_splits_none_next_index_suppresses_marker() {
         lines,
         vec![
             "&aLiveSplit: track \"doubletower\" (3 checkpoints, 1 fired)".to_string(),
-            "&a x #0 &aStart  \"spawn\"".to_string(),
-            "&e   #1 &eSplit  \"midpoint\"".to_string(),
-            "&c   #2 &cEnd    \"finish\"".to_string(),
+            "&a x #0 &aStart &7(0,0,0 1,1,1) &a\"spawn\"".to_string(),
+            "&e   #1 &eSplit &7(10,0,0 1,1,1) &e\"midpoint\"".to_string(),
+            "&c   #2 &cEnd &7(20,0,0 1,1,1) &c\"finish\"".to_string(),
         ]
     );
     assert!(
@@ -1986,10 +2027,10 @@ fn format_splits_pause_resume_kinds_use_correct_color_codes() {
         lines,
         vec![
             "&aLiveSplit: track \"paused run\" (4 checkpoints, 2 fired)".to_string(),
-            "&a x #0 &aStart  \"start\"".to_string(),
-            "&b x #1 &bPause  \"pause zone\"".to_string(),
-            "&e> #2 &6Resume \"resume zone\" &e<".to_string(),
-            "&c   #3 &cEnd    \"end\"".to_string(),
+            "&a x #0 &aStart &7(0,0,0 1,1,1) &a\"start\"".to_string(),
+            "&b x #1 &bPause &7(5,0,0 1,1,1) &b\"pause zone\"".to_string(),
+            "&e> #2 &6Resume &7(10,0,0 1,1,1) &6\"resume zone\" &e<".to_string(),
+            "&c   #3 &cEnd &7(20,0,0 1,1,1) &c\"end\"".to_string(),
         ]
     );
 }

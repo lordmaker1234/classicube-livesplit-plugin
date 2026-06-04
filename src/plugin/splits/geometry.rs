@@ -249,8 +249,10 @@ pub(crate) fn kind_color_code(kind: CheckpointKind) -> &'static str {
 /// colored by checkpoint kind (matching the HUD). The marker char conveys
 /// run status: `x` (fired) or blank (pending) for non-next rows. The kind
 /// column shows the kind name for an `Aabb` trigger or `Map` for a
-/// `MapLoaded` map-transition; the quoted text is always the checkpoint's
-/// label.
+/// `MapLoaded` map-transition. Each row shows a dim-gray detail in parens
+/// before the quoted label: `Aabb` rows show the box's min corner and size
+/// `(x,y,z w,h,d)` (size, not max corner -- shorter, and matches the
+/// `<min> <size>` wire form); `MapLoaded` rows show the destination map name.
 #[must_use]
 pub(crate) fn format_splits(
     track: &Track,
@@ -266,14 +268,34 @@ pub(crate) fn format_splits(
     ));
     for (i, cp) in track.checkpoints.iter().enumerate() {
         let code = kind_color_code(cp.kind);
-        let kind_col = match cp.trigger {
-            Trigger::Aabb(_) => kind_name(cp.kind),
-            Trigger::MapLoaded(_) => "Map",
+        // Dim-gray detail in parens before the label, then re-emit `code` so
+        // the label keeps its kind color: Aabb rows show the box's min corner
+        // and size `(x,y,z w,h,d)` (size, not max corner -- shorter, matches
+        // the wire `<min> <size>` form); Map rows show the destination map
+        // name.
+        let (kind_col, paren) = match &cp.trigger {
+            Trigger::Aabb(aabb) => {
+                let lo = vec3_to_u16(aabb.min);
+                let hi = vec3_to_u16(aabb.max);
+                let sz = [
+                    hi[0].saturating_sub(lo[0]),
+                    hi[1].saturating_sub(lo[1]),
+                    hi[2].saturating_sub(lo[2]),
+                ];
+                (
+                    kind_name(cp.kind),
+                    format!(
+                        "&7({},{},{} {},{},{}) {code}",
+                        lo[0], lo[1], lo[2], sz[0], sz[1], sz[2]
+                    ),
+                )
+            }
+            Trigger::MapLoaded(name) => ("Map", format!("&7({name}) {code}")),
         };
         let label = &cp.label;
         lines.push(if Some(i) == next_index {
             // Wrap the next-target row like the HUD label: `&e> {body} &e<`.
-            format!("&e> #{i} {code}{kind_col:<6} \"{label}\" &e<")
+            format!("&e> #{i} {code}{kind_col} {paren}\"{label}\" &e<")
         } else {
             // Next wins over fired; marker char conveys status (x = fired, blank = pending).
             let marker = if fired.get(i).copied().unwrap_or(false) {
@@ -281,7 +303,7 @@ pub(crate) fn format_splits(
             } else {
                 ' '
             };
-            format!("{code} {marker} #{i} {code}{kind_col:<6} \"{label}\"")
+            format!("{code} {marker} #{i} {code}{kind_col} {paren}\"{label}\"")
         });
     }
     lines
