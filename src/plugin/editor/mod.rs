@@ -224,6 +224,18 @@ pub fn set_kind_map(i: usize, name: Option<String>) {
     }
 }
 
+/// `edit new <name>`. Start authoring a brand-new empty track named
+/// `name`, scoped to the current map. Auto-enables edit mode (installs the
+/// `SendBlock` hook + resets any in-progress run) so the next clicks place
+/// checkpoints immediately. Replaces any currently loaded track.
+pub fn new_track(name: String) {
+    if !is_enabled() {
+        set_enabled(true); // installs hook, prints "edit mode ON", resets run
+    }
+    EDITOR_STATE.with_borrow_mut(|s| s.pending = None); // drop any half-armed placement
+    splits::new_track(name);
+}
+
 /// `edit clear`. Drop the loaded track and reset editor state so the
 /// player can author a fresh one from scratch.
 pub fn clear() {

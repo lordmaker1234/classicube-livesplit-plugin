@@ -106,6 +106,14 @@ fn on_track_loaded(track: &Track, starting_map: Option<&str>) {
     // `/client LiveSplit open` falls back to the track directory.
     clear_loaded_path();
 
+    // A brand-new empty track (editor `edit new`) has nothing worth
+    // persisting yet; skip the background autosave so we don't write a
+    // 0-checkpoint `.lss`. The explicit `/client LiveSplit save` after
+    // placing checkpoints is the first write.
+    if track.checkpoints.is_empty() {
+        return;
+    }
+
     let Some(server) = current_server_display() else {
         debug!("save skipped: no server name");
         return;
@@ -131,6 +139,10 @@ pub fn save_current_track() {
         chat_print("&cLiveSplit: no track loaded to save");
         return;
     };
+    if track.checkpoints.is_empty() {
+        chat_print("&eLiveSplit: nothing to save yet (track has no checkpoints)");
+        return;
+    }
     let Some(server) = current_server_display() else {
         chat_print("&cLiveSplit: cannot resolve server name to save under");
         return;

@@ -278,6 +278,33 @@ pub fn load_track(track: Track, source: &str) -> bool {
     true
 }
 
+/// Create and load a fresh empty track named `name` (editor `edit new`).
+/// Scoped to the current world (`read_world_name()`), cursor re-armed to 0.
+/// Fires `LOAD_CALLBACK` like the other load paths -- the lss autosave
+/// short-circuits on the empty track (see `on_track_loaded`). Returns
+/// `false` only if the plugin is mid-teardown.
+pub fn new_track(name: String) -> bool {
+    let track = Track {
+        name: name.clone(),
+        checkpoints: Vec::new(),
+    };
+    // An empty track trivially passes pause/resume pairing; no validate call.
+    let starting_map = read_world_name();
+    info!(?starting_map, "creating new empty track \"{name}\"");
+    if with_state(|s| s.load(track.clone(), starting_map.clone())).is_none() {
+        chat_print("&eLiveSplit: plugin not active");
+        return false;
+    }
+    if let Some(cb) = LOAD_CALLBACK.get() {
+        cb(&track, starting_map.as_deref());
+    }
+    chat_print(&format!(
+        "&aLiveSplit: new track \"{name}\" -- place Start then splits with /client LiveSplit edit \
+         add"
+    ));
+    true
+}
+
 /// Snapshot the currently-loaded `Track` for the chat-encode debug
 /// command. `None` if no track is loaded or the plugin is mid-teardown.
 pub fn current_track() -> Option<Track> {

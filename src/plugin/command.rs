@@ -49,7 +49,7 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit load [filename]   (newest, or a specific .lss)");
     chat_print("&e  /client LiveSplit open               (reveal the loaded track file)");
     chat_print("&e  /client LiveSplit show [on|off]    (toggle checkpoint HUD)");
-    chat_print("&e  /client LiveSplit edit on|off");
+    chat_print("&e  /client LiveSplit edit on|off | new <name>");
     chat_print("&e  /client LiveSplit edit add [i] | redraw <i> | cancel");
     chat_print("&e  /client LiveSplit edit remove <i> | move <from> <to>");
     chat_print("&e  /client LiveSplit edit kind <i> start|end|split|pause|resume|map [name]");
@@ -243,6 +243,10 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         // `splits::editor_*`).
         ["edit", "on"] => editor::set_enabled(true),
         ["edit", "off"] => editor::set_enabled(false),
+        ["edit", "new", rest @ ..] if !rest.is_empty() => editor::new_track(rest.join(" ")),
+        ["edit", "new"] => {
+            chat_print("&cLiveSplit: usage: /client LiveSplit edit new <name>");
+        }
         ["edit", "add"] => editor::arm_add(None),
         ["edit", "add", i] => {
             if let Some(idx) = parse_index(i) {
@@ -353,7 +357,8 @@ impl CommandModule {
                     "&a/client LiveSplit load [filename]",
                     "&a/client LiveSplit open",
                     "&a/client LiveSplit show [on|off]",
-                    "&a/client LiveSplit edit on|off | add [i] | redraw <i> | cancel",
+                    "&a/client LiveSplit edit on|off | new <name>",
+                    "&a/client LiveSplit edit add [i] | redraw <i> | cancel",
                     "&a/client LiveSplit edit remove <i> | move <from> <to>",
                     "&a/client LiveSplit edit kind <i> start|end|split|pause|resume|map [name]",
                     "&a/client LiveSplit edit label <i> <text> | clear",
