@@ -22,12 +22,14 @@
 
 mod boxes;
 mod labels;
+mod lines;
+mod shared;
 
 use std::cell::Cell;
 
 use classicube_helpers::tick::TickEventHandler;
 
-use self::{boxes::BoxesModule, labels::LabelsModule};
+use self::{boxes::BoxesModule, labels::LabelsModule, lines::LinesModule};
 use crate::plugin::{editor, module::Module, splits};
 
 /// Private selection-id range for plugin-owned checkpoint boxes. Server
@@ -64,6 +66,7 @@ pub fn toggle_show() -> bool {
 pub struct HudModule {
     boxes: BoxesModule,
     labels: LabelsModule,
+    lines: LinesModule,
     // Owned for its Drop side-effect: TickEventHandler::Drop unregisters
     // the reconcile closure from the helpers crate's tick callback list.
     _tick: TickEventHandler,
@@ -76,6 +79,7 @@ impl HudModule {
 
         let boxes = BoxesModule::init();
         let labels = LabelsModule::init();
+        let lines = LinesModule::init();
 
         let mut tick = TickEventHandler::new();
         tick.on(|_event| reconcile());
@@ -83,6 +87,7 @@ impl HudModule {
         Self {
             boxes,
             labels,
+            lines,
             _tick: tick,
         }
     }
@@ -90,7 +95,7 @@ impl HudModule {
 
 impl Module for HudModule {
     fn children(&mut self) -> Vec<&mut dyn Module> {
-        vec![&mut self.boxes, &mut self.labels]
+        vec![&mut self.boxes, &mut self.labels, &mut self.lines]
     }
 }
 
@@ -119,4 +124,5 @@ fn reconcile() {
 
     boxes::reconcile(&visible);
     labels::reconcile(&visible);
+    lines::reconcile(&visible);
 }

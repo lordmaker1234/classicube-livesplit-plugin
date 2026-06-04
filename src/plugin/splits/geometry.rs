@@ -302,9 +302,11 @@ pub(crate) fn format_splits(
                     ),
                 )
             }
-            Trigger::MapLoaded(name) => {
-                (MAP_COLOR_CODE, "Map", format!("&7({name}) {MAP_COLOR_CODE}"))
-            }
+            Trigger::MapLoaded(name) => (
+                MAP_COLOR_CODE,
+                "Map",
+                format!("&7({name}) {MAP_COLOR_CODE}"),
+            ),
         };
         let label = &cp.label;
         lines.push(if Some(i) == next_index {

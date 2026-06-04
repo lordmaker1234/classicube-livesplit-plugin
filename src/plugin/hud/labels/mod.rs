@@ -36,7 +36,7 @@ use classicube_helpers::events::gfx::{ContextLostEventHandler, ContextRecreatedE
 use classicube_sys::{Gfx, OwnedScreen, OwnedTexture, Vec3};
 use tracing::debug;
 
-use super::HUD_ID_COUNT;
+use super::{HUD_ID_COUNT, shared};
 use crate::plugin::{
     editor,
     module::Module,
@@ -46,10 +46,6 @@ use crate::plugin::{
 /// One entry from `splits::visible_aabbs()`: the track-wide index, kind, AABB,
 /// raw label, and is-next flag.
 type VisibleEntry = (usize, CheckpointKind, Aabb, String, bool);
-
-/// Vertical gap (in blocks) between the top of a box and the bottom of its
-/// label, so the text floats just clear of the cuboid's top face.
-const LABEL_Y_OFFSET: f32 = 0.3;
 
 /// Target world height (in blocks) of a single line of label text. The
 /// pixel->world scale is derived per-label from this and the rendered text
@@ -109,6 +105,14 @@ impl LabelsModule {
     /// Subscribe to the context events (creating the vertex buffer now) and
     /// register the render hook. The font is built lazily on first label.
     pub(super) fn init() -> Self {
+        // Defensive reset: these thread-locals persist across
+        // Init -> Free -> Init in the same process (ClassiCube never
+        // `dlclose`s the .so), and a crash-skipped free() would leave stale
+        // cached label textures + diff keys. Drop them so the first reconcile
+        // rebuilds from the new run's scoped set. (`context::subscribe`
+        // rebuilds the vertex buffer below.)
+        invalidate();
+
         let (context_lost, context_recreated) = context::subscribe();
         let screen = render::install();
         Self {
@@ -184,11 +188,7 @@ pub(super) fn reconcile(visible: &[VisibleEntry]) {
         };
         let scale = LABEL_LINE_WORLD_HEIGHT / px_h;
         let size_world = (px_w * scale, px_h * scale);
-        let anchor = Vec3::create(
-            (aabb.min.x + aabb.max.x) / 2.0,
-            aabb.max.y + LABEL_Y_OFFSET,
-            (aabb.min.z + aabb.max.z) / 2.0,
-        );
+        let anchor = shared::label_anchor(aabb);
         labels.push(Label {
             anchor,
             size_world,

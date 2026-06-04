@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use classicube_sys::{IVec3, PackedCol, PackedCol_Make, Selections_Add, Selections_Remove, Vec3};
 use tracing::{debug, warn};
 
-use super::{HUD_ID_BASE, HUD_ID_COUNT, HUD_ID_LAST};
+use super::{HUD_ID_BASE, HUD_ID_COUNT, HUD_ID_LAST, shared};
 use crate::plugin::{
     module::Module,
     splits::geometry::{Aabb, CheckpointKind},
@@ -47,6 +47,11 @@ impl BoxesModule {
         // selections (crash / abnormal teardown). Removing an id that
         // isn't installed is a harmless no-op engine-side.
         clear_all_selections();
+        // Also reset the cached snapshot. Thread-locals persist across
+        // Init -> Free -> Init (ClassiCube never `dlclose`s the .so), so a
+        // crash-skipped free() could leave a stale LAST_APPLIED that wrongly
+        // suppresses the first re-add now that the engine list was just swept.
+        invalidate();
         Self
     }
 }
@@ -166,12 +171,9 @@ fn color_for_kind(kind: CheckpointKind, is_next: bool) -> PackedCol {
     // `PackedCol_Make` is the classicube-sys const-fn wrapper around the
     // engine's `PackedCol_Make` macro -- it builds the word from the
     // platform-correct channel shifts, so we don't hand-roll the packing.
+    // RGB comes from the single-source-of-truth palette in `shared::kind_rgb`
+    // so all three HUD layers (boxes, labels, lines) stay in sync.
     let a = if is_next { NEXT_BOX_ALPHA } else { BOX_ALPHA };
-    match kind {
-        CheckpointKind::Start => PackedCol_Make(0, 255, 0, a), // green
-        CheckpointKind::Split => PackedCol_Make(255, 255, 0, a), // yellow
-        CheckpointKind::Pause => PackedCol_Make(0, 200, 255, a), // cyan
-        CheckpointKind::Resume => PackedCol_Make(255, 140, 0, a), // orange
-        CheckpointKind::End => PackedCol_Make(255, 0, 0, a),   // red
-    }
+    let (r, g, b) = shared::kind_rgb(kind);
+    PackedCol_Make(r, g, b, a)
 }

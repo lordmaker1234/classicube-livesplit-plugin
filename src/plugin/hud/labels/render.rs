@@ -22,39 +22,7 @@ use classicube_sys::{
     VertexFormat__VERTEX_FORMAT_TEXTURED, VertexTextured, screen::Priority,
 };
 
-use super::{LABELS, Label};
-
-/// Mirror ClassiCube's per-backend `Gfx_CalcOrthoMatrix`, picking the formula
-/// at compile time. `Matrix::orthographic` is GL-flavored (clip-space z
-/// `[-1, 1]`) -- feeding it to D3D9/D3D11 (clip-space z `[0, 1]`) puts every
-/// 2D vertex outside the clip range and the rasterizer culls the entire HUD.
-///
-/// `Gfx_CalcOrthoMatrix` itself is not `CC_API` and so isn't exported from
-/// `ClassiCube.dll` on Windows, so we replicate it here.
-fn calc_ortho_matrix(width: f32, height: f32, z_near: f32, z_far: f32) -> Matrix {
-    let mut m = Matrix::IDENTITY;
-    m.row1.x = 2.0 / width;
-    m.row2.y = -2.0 / height;
-
-    if cfg!(target_os = "windows") {
-        // D3D9 / D3D11: clip-space z is [0, 1]; D3D9 also wants a half-pixel
-        // x/y nudge. Mirrors `Graphics_D3D9.c:756` (z math is identical to
-        // `Graphics_D3D11.c:507`; the half-pixel nudge is harmless on D3D11).
-        let adjust_x = 0.5 * (2.0 / width);
-        let adjust_y = 0.5 * (-2.0 / height);
-        m.row3.z = 1.0 / (z_near - z_far);
-        m.row4.x = -1.0 - adjust_x;
-        m.row4.y = 1.0 - adjust_y;
-        m.row4.z = z_near / (z_near - z_far);
-    } else {
-        // GL clip-space z is [-1, 1]. Mirrors `_GLShared.h:289`.
-        m.row3.z = -2.0 / (z_far - z_near);
-        m.row4.x = -1.0;
-        m.row4.y = 1.0;
-        m.row4.z = -(z_far + z_near) / (z_far - z_near);
-    }
-    m
-}
+use super::{LABELS, Label, shared};
 
 /// Stream one label's quad into the shared dynamic vertex buffer and draw it.
 /// `Particle_DoRender` builds the four world-space verts from the camera
@@ -110,12 +78,13 @@ unsafe extern "C" fn render(_elem: *mut c_void, _delta: f32) {
         // Reconstruct the 2D ortho + identity view + HUD state `Gfx_Begin2D`
         // had loaded so the chatbox / hotbar / crosshair draw correctly after
         // us. Must use a backend-correct ortho formula (see
-        // `calc_ortho_matrix`).
+        // `shared::calc_ortho_matrix`).
         #[expect(
             clippy::cast_precision_loss,
             reason = "window dimensions are small positive ints"
         )]
-        let ortho = calc_ortho_matrix(Game.Width as f32, Game.Height as f32, -100.0, 1000.0);
+        let ortho =
+            shared::calc_ortho_matrix(Game.Width as f32, Game.Height as f32, -100.0, 1000.0);
         Gfx_LoadMatrix(MatrixType__MATRIX_PROJ, &ortho);
         Gfx_LoadMatrix(MatrixType__MATRIX_VIEW, &Matrix::IDENTITY);
         Gfx_SetAlphaBlending(1);
