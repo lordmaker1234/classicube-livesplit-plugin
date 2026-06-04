@@ -1319,17 +1319,7 @@ fn add_checkpoint_appends_before_end_and_rederives_boundaries() {
 }
 
 #[test]
-fn add_checkpoint_target_clamps_inside_boundaries() {
-    use CheckpointKind::{End, Split, Start};
-    let mut state = SplitsState::default();
-    state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4
-    // target 0 would displace Start -> clamped to 1.
-    let idx = state
-        .add_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(0))
-        .unwrap();
-    assert_eq!(idx, 1);
-    assert_eq!(kinds(&state), vec![Start, Split, Split, Split, End]);
-
+fn add_checkpoint_target_clamps_to_upper_boundary() {
     // A large target clamps to n - 1 (just before End), never past it.
     let mut state = SplitsState::default();
     state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4
@@ -1339,6 +1329,48 @@ fn add_checkpoint_target_clamps_inside_boundaries() {
     assert_eq!(idx, 3);
     let t = state.track.as_ref().unwrap();
     assert_eq!(t.checkpoints[4].kind, CheckpointKind::End);
+}
+
+#[test]
+fn add_checkpoint_at_zero_becomes_start_and_demotes_old_start() {
+    use CheckpointKind::{End, Split, Start};
+    // linear_track: [Start@(0,0,0)-(2,4,2), Split, Split, End]
+    let old_start_box = aabb((0.0, 0.0, 0.0), (2.0, 4.0, 2.0));
+    let new_box = aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0));
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    let idx = state
+        .add_checkpoint(new_box, "new".into(), Some(0))
+        .unwrap();
+    assert_eq!(idx, 0, "Some(0) inserts at index 0");
+    assert_eq!(kinds(&state), vec![Start, Split, Split, Split, End]);
+    let t = state.track.as_ref().unwrap();
+    // The new checkpoint is the Start; the old Start is now at index 1 as a Split.
+    assert_eq!(t.checkpoints[0].trigger, Trigger::Aabb(new_box));
+    assert_eq!(t.checkpoints[1].trigger, Trigger::Aabb(old_start_box));
+    // Latches reallocated, run re-armed.
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false; 5]);
+    assert_eq!(state.last_inside, vec![false; 5]);
+}
+
+#[test]
+fn add_checkpoint_bootstrap_some_zero_lands_at_zero() {
+    // On an empty track the n < 2 bootstrap path ignores target; Some(0)
+    // still places the first checkpoint at index 0 -> re-derived to Start.
+    let mut state = SplitsState::default();
+    state.load(
+        Track {
+            name: "empty".into(),
+            checkpoints: vec![],
+        },
+        Some(TEST_MAP.to_string()),
+    );
+    let idx = state
+        .add_checkpoint(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0)), "a".into(), Some(0))
+        .unwrap();
+    assert_eq!(idx, 0);
+    assert_eq!(kinds(&state), vec![CheckpointKind::Start]);
 }
 
 #[test]

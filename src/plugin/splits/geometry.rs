@@ -377,13 +377,16 @@ impl SplitsState {
     /// landed at. `target` is `None` to append (just before `End`) or
     /// `Some(i)` to insert at a specific slot. On a populated track
     /// (>= 2 checkpoints) the insert position is clamped to
-    /// `[1, n - 1]` so the boundary slots never move: Start stays at
-    /// index 0, End stays last. Bootstrapping an empty/one-checkpoint
-    /// track ignores `target` -- the first placement becomes index 0
-    /// (later re-derived to `Start`), the second appends as index 1
-    /// (re-derived to `End`). After the structural change the boundary
-    /// kinds are re-derived and the per-checkpoint latches reallocated
-    /// (the run re-arms to index 0). `Err` if no track is loaded.
+    /// `[0, n - 1]`: the upper bound keeps `End` as the last
+    /// checkpoint; `Some(0)` inserts before the current `Start`,
+    /// which `re_derive_kinds` then promotes to the new `Start` (the
+    /// displaced former `Start` becomes a middle `Split`). Bootstrapping
+    /// an empty/one-checkpoint track ignores `target` -- the first
+    /// placement becomes index 0 (later re-derived to `Start`), the
+    /// second appends as index 1 (re-derived to `End`). After the
+    /// structural change the boundary kinds are re-derived and the
+    /// per-checkpoint latches reallocated (the run re-arms to index 0).
+    /// `Err` if no track is loaded.
     pub fn add_checkpoint(
         &mut self,
         aabb: Aabb,
@@ -399,10 +402,11 @@ impl SplitsState {
                 // Bootstrap: first placement -> 0, second -> 1.
                 n
             } else {
-                // Strictly between Start and End so boundaries don't move.
                 match target {
                     None => n - 1,
-                    Some(i) => i.clamp(1, n - 1),
+                    // Upper bound: End must stay last. Lower bound removed so
+                    // Some(0) inserts before Start; re_derive_kinds promotes it.
+                    Some(i) => i.min(n - 1),
                 }
             };
             track.checkpoints.insert(
