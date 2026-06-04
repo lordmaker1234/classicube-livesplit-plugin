@@ -13,6 +13,7 @@ use crate::{
     chat::chat_print_async,
     chat_print,
     plugin::{
+        editor,
         module::Module,
         splits::{self, geometry::Track},
     },
@@ -74,6 +75,10 @@ impl LssStorageModule {
             };
             if splits::run_in_progress() {
                 debug!("autoload skipped: run in progress");
+                return;
+            }
+            if editor::is_enabled() && splits::track_includes_map(&map) {
+                debug!("autoload skipped: editing a track that includes this map");
                 return;
             }
             let Some(server) = current_server_display() else {

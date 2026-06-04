@@ -326,6 +326,15 @@ pub fn run_in_progress() -> bool {
     with_state(|s| s.next_index > 0 && s.next_index < s.fired.len()).unwrap_or(false)
 }
 
+/// Whether `map_name` belongs to the currently-loaded track's map set
+/// (`starting_map` or any `Trigger::MapLoaded` target). `false` when no
+/// track is loaded or mid-teardown. Used by the autoload tick to avoid
+/// clobbering an open editor's multi-map track when the player crosses
+/// into another of its maps.
+pub fn track_includes_map(map_name: &str) -> bool {
+    with_state(|s| s.includes_map(map_name)).unwrap_or(false)
+}
+
 /// Snapshot the current map name (engine `World.Name` in singleplayer
 /// / file-loaded, tab-list group prefix on multiplayer). Returns
 /// `None` if neither source resolves a non-empty name.

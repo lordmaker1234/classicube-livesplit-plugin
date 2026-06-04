@@ -2202,3 +2202,69 @@ fn move_to_boundary_rolls_back_on_pairing_inversion() {
     // Track is unchanged (rolled back by move_checkpoint).
     assert_eq!(kinds(&state), vec![Start, Pause, Resume, End]);
 }
+
+// --- includes_map ---
+
+#[test]
+fn includes_map_returns_false_when_no_track() {
+    let state = SplitsState::default();
+    assert!(!state.includes_map("anything"));
+}
+
+#[test]
+fn includes_map_matches_starting_map() {
+    let mut state = SplitsState::default();
+    let track = Track {
+        name: "t".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
+            cp(CheckpointKind::End, (10.0, 0.0, 0.0), (11.0, 1.0, 1.0)),
+        ],
+    };
+    state.load(track, Some("spawn".to_string()));
+    assert!(state.includes_map("spawn"), "starting map must match");
+    assert!(!state.includes_map("other"), "unrelated map must not match");
+}
+
+#[test]
+fn includes_map_matches_map_loaded_target() {
+    let mut state = SplitsState::default();
+    let track = Track {
+        name: "t".into(),
+        checkpoints: vec![
+            cp_map(CheckpointKind::Start, "map_a"),
+            cp_map(CheckpointKind::Split, "map_b"),
+            cp_map(CheckpointKind::End, "map_c"),
+        ],
+    };
+    // Load with no starting_map; the route is expressed purely via
+    // Trigger::MapLoaded checkpoints.
+    state.load(track, None);
+    assert!(
+        state.includes_map("map_a"),
+        "MapLoaded target 'map_a' must match"
+    );
+    assert!(
+        state.includes_map("map_b"),
+        "MapLoaded target 'map_b' must match"
+    );
+    assert!(
+        state.includes_map("map_c"),
+        "MapLoaded target 'map_c' must match"
+    );
+    assert!(!state.includes_map("map_d"), "unrelated map must not match");
+}
+
+#[test]
+fn includes_map_unrelated_map_returns_false() {
+    let mut state = SplitsState::default();
+    let track = Track {
+        name: "t".into(),
+        checkpoints: vec![
+            cp_map(CheckpointKind::Start, "spawn"),
+            cp_map(CheckpointKind::End, "goal"),
+        ],
+    };
+    state.load(track, Some("spawn".to_string()));
+    assert!(!state.includes_map("unrelated_map"));
+}

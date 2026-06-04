@@ -362,6 +362,20 @@ impl SplitsState {
         }
     }
 
+    /// Whether `map_name` is part of the loaded track's map set --
+    /// its `starting_map` or the target of any `Trigger::MapLoaded`
+    /// checkpoint. Returns `false` when no track is loaded.
+    pub fn includes_map(&self, map_name: &str) -> bool {
+        if self.starting_map.as_deref() == Some(map_name) {
+            return true;
+        }
+        self.track.as_ref().is_some_and(|t| {
+            t.checkpoints
+                .iter()
+                .any(|cp| matches!(&cp.trigger, Trigger::MapLoaded(n) if n == map_name))
+        })
+    }
+
     /// Drop the loaded track and its per-checkpoint latches. After
     /// this, `step()` short-circuits (no `track`) until a new
     /// `load()`.
@@ -967,11 +981,7 @@ pub fn step_on_map_loaded<F: FnMut(Command)>(state: &mut SplitsState, map_name: 
         return;
     };
 
-    let on_route = state.starting_map.as_deref() == Some(map_name)
-        || track
-            .checkpoints
-            .iter()
-            .any(|cp| matches!(&cp.trigger, Trigger::MapLoaded(n) if n == map_name));
+    let on_route = state.includes_map(map_name);
     if !on_route {
         let n = state.fired.len();
         let in_progress = state.next_index > 0 && state.next_index < n;

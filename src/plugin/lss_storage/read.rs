@@ -15,6 +15,7 @@ use tracing::{debug, info};
 use crate::{
     chat::chat_print_async,
     plugin::{
+        editor,
         lss_storage::{
             path,
             payload::{self, CUSTOM_VAR_NAME},
@@ -41,6 +42,16 @@ pub async fn try_autoload(server: String, map: String) {
                 // (`SplitsState::load` resets `next_index`/`fired[]`).
                 if splits::run_in_progress() {
                     debug!("autoload skipped on main thread: run started during disk read");
+                    return;
+                }
+                // Close the race between the tick-side editor guard and
+                // the async hop: if the user enabled edit mode *after*
+                // the tick already spawned this task, suppress the load
+                // just like the tick would have.
+                if editor::is_enabled() && splits::track_includes_map(&map) {
+                    debug!(
+                        "autoload skipped on main thread: editing a track that includes this map"
+                    );
                     return;
                 }
                 // `false` means the plugin is mid-teardown
