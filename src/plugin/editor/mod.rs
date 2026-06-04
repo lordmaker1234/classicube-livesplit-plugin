@@ -115,6 +115,36 @@ pub fn set_enabled(on: bool) {
     }
 }
 
+/// Tick helper: when the live world name changes to a map that is NOT part
+/// of the loaded track (neither its `starting_map` nor a
+/// `Trigger::MapLoaded` target) while edit mode is on, turn edit mode off.
+/// Detection is tick-driven because at `OnNewMapLoaded` time `World.Name`
+/// is zeroed and (multiplayer) the tab-list group still names the previous
+/// map; `splits::current_map()` only settles a few ticks later.
+fn disable_if_left_track(last: &mut Option<String>) {
+    let cur = splits::current_map();
+    if *last == cur {
+        return;
+    }
+    // Advance the latch before any guard: fire at most once per transition
+    // and keep the latch current even while edit mode is off so a later
+    // re-enable doesn't mis-fire on the next tick.
+    last.clone_from(&cur);
+    // A transient `None` mid-load must never disable; re-evaluate when the
+    // real name arrives next tick.
+    let Some(map) = cur else {
+        return;
+    };
+    if !is_enabled() {
+        return;
+    }
+    if splits::track_includes_map(&map) {
+        return;
+    }
+    chat_print("&eLiveSplit: left the track's maps -- edit mode auto-disabled");
+    set_enabled(false);
+}
+
 /// `edit add [i]`. Arm a placement: the next two block clicks become a
 /// checkpoint's corners. `target` is `None` to append to the player's
 /// current map section (before its terminating `MapLoaded`, or before
@@ -351,7 +381,14 @@ impl EditorModule {
         // `MPConnection_Init` on world load / connect, so it may still be
         // unpopulated at plugin construction.
         let mut tick = TickEventHandler::new();
-        tick.on(|_| preview::reconcile());
+        // Latches the live world name across ticks so we fire at most once
+        // per map transition and keep the latch current even while edit
+        // mode is off.
+        let mut last_seen_map: Option<String> = None;
+        tick.on(move |_| {
+            preview::reconcile();
+            disable_if_left_track(&mut last_seen_map);
+        });
         Self { _tick: tick }
     }
 }
