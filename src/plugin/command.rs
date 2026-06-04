@@ -49,15 +49,23 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit load [filename]   (newest, or a specific .lss)");
     chat_print("&e  /client LiveSplit open               (reveal the loaded track file)");
     chat_print("&e  /client LiveSplit show [on|off]    (toggle checkpoint HUD)");
+    chat_print(
+        "&e  /client LiveSplit edit              (track authoring; run 'edit' for sub-commands)",
+    );
+    chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
+    chat_print(
+        "&e  /client LiveSplit nas               (copies all lines, \\n-separated, to clipboard)",
+    );
+}
+
+/// Editor sub-command usage, printed on a bare `/client LiveSplit edit`.
+fn print_edit_usage() {
+    chat_print("&eEditor usage:");
     chat_print("&e  /client LiveSplit edit on|off | new <name> | rename <name>");
     chat_print("&e  /client LiveSplit edit add [i] | redraw <i> | cancel");
     chat_print("&e  /client LiveSplit edit remove <i> | move <from> <to>");
     chat_print("&e  /client LiveSplit edit kind <i> start|end|split|pause|resume|map [name]");
     chat_print("&e  /client LiveSplit edit label <i> <text> | clear");
-    chat_print("&e  /client LiveSplit mb <subcmd ...>  (one chained /mb to deliver all lines)");
-    chat_print(
-        "&e  /client LiveSplit nas               (copies all lines, \\n-separated, to clipboard)",
-    );
 }
 
 /// Parse a checkpoint index argument, chat-printing an error and
@@ -241,6 +249,7 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         // `require_connected()` (the editor is usable offline; a
         // mutation mid-run notifies any attached timer via
         // `splits::editor_*`).
+        ["edit"] => print_edit_usage(),
         ["edit", "on"] => editor::set_enabled(true),
         ["edit", "off"] => editor::set_enabled(false),
         ["edit", "new", rest @ ..] if !rest.is_empty() => editor::new_track(rest.join(" ")),
@@ -352,22 +361,15 @@ impl CommandModule {
                 "LiveSplit",
                 c_callback,
                 false,
+                // ClassiCube caps the help array at 5 slots -- entries beyond
+                // the 5th are silently dropped. Keep exactly 5 dense lines;
+                // full usage is available via `/client LiveSplit` (no args).
                 vec![
-                    "&a/client LiveSplit status",
-                    "&a/client LiveSplit start | split | splitorstart",
-                    "&a/client LiveSplit pause | resume | reset",
-                    "&a/client LiveSplit undosplit | skipsplit",
-                    "&a/client LiveSplit loadtest | splits | clear | save",
-                    "&a/client LiveSplit load [filename]",
-                    "&a/client LiveSplit open",
-                    "&a/client LiveSplit show [on|off]",
-                    "&a/client LiveSplit edit on|off | new <name> | rename <name>",
-                    "&a/client LiveSplit edit add [i] | redraw <i> | cancel",
-                    "&a/client LiveSplit edit remove <i> | move <from> <to>",
-                    "&a/client LiveSplit edit kind <i> start|end|split|pause|resume|map [name]",
-                    "&a/client LiveSplit edit label <i> <text> | clear",
-                    "&a/client LiveSplit mb <subcmd ...>",
-                    "&a/client LiveSplit nas",
+                    "&a/client LiveSplit status | start | split | splitorstart",
+                    "&a/client LiveSplit pause | resume | reset | undosplit | skipsplit",
+                    "&a/client LiveSplit loadtest | splits | clear | save | load | open",
+                    "&a/client LiveSplit show [on|off] | edit | mb | nas",
+                    "&a(no args = full usage; 'edit' alone = editor sub-commands)",
                 ],
             );
             cmd.register();
