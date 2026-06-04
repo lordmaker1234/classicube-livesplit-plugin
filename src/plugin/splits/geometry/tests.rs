@@ -1834,10 +1834,54 @@ fn format_splits_lists_each_checkpoint_with_markers() {
         lines,
         vec![
             "&aLiveSplit: track \"doubletower\" (4 checkpoints, 1 fired)".to_string(),
-            "&8 x #0 Start  \"spawn\"".to_string(),
-            "&e > #1 Split  \"midpoint\"".to_string(),
-            "&f   #2 Map    \"tower2\"".to_string(),
-            "&f   #3 End    \"finish\"".to_string(),
+            "&a x #0 &aStart  \"spawn\"".to_string(),
+            "&e > #1 &eSplit  \"midpoint\"".to_string(),
+            "&e   #2 &eMap    \"tower2\"".to_string(),
+            "&c   #3 &cEnd    \"finish\"".to_string(),
+        ]
+    );
+}
+
+// Verify Pause (`&b`) and Resume (`&6`) kind colors, and that a pending
+// next checkpoint gets a yellow marker regardless of its kind.
+#[test]
+fn format_splits_pause_resume_kinds_use_correct_color_codes() {
+    let track = Track {
+        name: "paused run".into(),
+        checkpoints: vec![
+            Checkpoint {
+                kind: CheckpointKind::Start,
+                trigger: Trigger::Aabb(aabb((0.0, 0.0, 0.0), (1.0, 1.0, 1.0))),
+                label: "start".into(),
+            },
+            Checkpoint {
+                kind: CheckpointKind::Pause,
+                trigger: Trigger::Aabb(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0))),
+                label: "pause zone".into(),
+            },
+            Checkpoint {
+                kind: CheckpointKind::Resume,
+                trigger: Trigger::Aabb(aabb((10.0, 0.0, 0.0), (11.0, 1.0, 1.0))),
+                label: "resume zone".into(),
+            },
+            Checkpoint {
+                kind: CheckpointKind::End,
+                trigger: Trigger::Aabb(aabb((20.0, 0.0, 0.0), (21.0, 1.0, 1.0))),
+                label: "end".into(),
+            },
+        ],
+    };
+    // Checkpoints 0 and 1 fired; cursor on 2 (Resume -- next, yellow marker).
+    let fired = [true, true, false, false];
+    let lines = format_splits(&track, &fired, 2);
+    assert_eq!(
+        lines,
+        vec![
+            "&aLiveSplit: track \"paused run\" (4 checkpoints, 2 fired)".to_string(),
+            "&a x #0 &aStart  \"start\"".to_string(),
+            "&b x #1 &bPause  \"pause zone\"".to_string(),
+            "&e > #2 &6Resume \"resume zone\"".to_string(),
+            "&c   #3 &cEnd    \"end\"".to_string(),
         ]
     );
 }

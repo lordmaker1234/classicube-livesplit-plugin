@@ -40,7 +40,7 @@ use super::HUD_ID_COUNT;
 use crate::plugin::{
     editor,
     module::Module,
-    splits::geometry::{Aabb, CheckpointKind, kind_name},
+    splits::geometry::{Aabb, CheckpointKind, kind_color_code, kind_name},
 };
 
 /// One entry from `splits::visible_aabbs()`: the track-wide index, kind, AABB,
@@ -248,20 +248,6 @@ fn display_label(
         format!("&e> {body}")
     } else {
         body
-    }
-}
-
-/// The `&`-code whose hue matches `boxes::color_for_kind`'s `PackedCol` for
-/// this kind (hud/boxes.rs). The two hue tables are deliberately separate
-/// (PackedCol vs `&`-code, different types); keep them in sync if a hue ever
-/// changes.
-fn kind_color_code(kind: CheckpointKind) -> &'static str {
-    match kind {
-        CheckpointKind::Start => "&a",  // green  (0,255,0)
-        CheckpointKind::Split => "&e",  // yellow (255,255,0)
-        CheckpointKind::Pause => "&b",  // cyan   (0,200,255)
-        CheckpointKind::Resume => "&6", // orange (255,140,0)
-        CheckpointKind::End => "&c",    // red    (255,0,0)
     }
 }
 

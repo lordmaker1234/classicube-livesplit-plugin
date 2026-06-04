@@ -227,14 +227,28 @@ pub(crate) fn kind_name(kind: CheckpointKind) -> &'static str {
     }
 }
 
+/// ClassiCube `&`-code whose hue matches `hud::boxes::color_for_kind`'s
+/// `PackedCol` for this kind. The two hue tables are deliberately separate
+/// (`PackedCol` vs `&`-code, different types); keep them in sync if a hue
+/// ever changes. Used by [`format_splits`] and `hud::labels::kind_color_code`.
+pub(crate) fn kind_color_code(kind: CheckpointKind) -> &'static str {
+    match kind {
+        CheckpointKind::Start => "&a",  // green  (0,255,0)
+        CheckpointKind::Split => "&e",  // yellow (255,255,0)
+        CheckpointKind::Pause => "&b",  // cyan   (0,200,255)
+        CheckpointKind::Resume => "&6", // orange (255,140,0)
+        CheckpointKind::End => "&c",    // red    (255,0,0)
+    }
+}
+
 /// Render the loaded track as chat lines for `/client LiveSplit splits`: a
 /// header line plus one line per checkpoint, in track order. `fired` and
-/// `next_index` come straight off [`SplitsState`]. Each row's marker is `>`
-/// for the next eligible checkpoint (`next_index`), `x` for an
-/// already-fired one, or blank for pending, color-coded to match. The kind
-/// column shows the kind name for an `Aabb` trigger or `Map` for a
-/// `MapLoaded` map-transition; the quoted text is always the checkpoint's
-/// label.
+/// `next_index` come straight off [`SplitsState`]. Each row is colored by
+/// checkpoint kind (matching the HUD), with the next checkpoint's marker
+/// highlighted yellow (`>`). The marker char conveys run status: `>` (next),
+/// `x` (fired), or blank (pending). The kind column shows the kind name for
+/// an `Aabb` trigger or `Map` for a `MapLoaded` map-transition; the quoted
+/// text is always the checkpoint's label.
 #[must_use]
 pub(crate) fn format_splits(track: &Track, fired: &[bool], next_index: usize) -> Vec<String> {
     let total = track.checkpoints.len();
@@ -245,21 +259,24 @@ pub(crate) fn format_splits(track: &Track, fired: &[bool], next_index: usize) ->
         track.name
     ));
     for (i, cp) in track.checkpoints.iter().enumerate() {
+        let code = kind_color_code(cp.kind);
         // Next wins over fired (they can't both apply for one index, but
         // order the check so the run's target always reads as `>`).
-        let (color, marker) = if i == next_index {
-            ("&e", '>')
+        let (marker_color, marker) = if i == next_index {
+            ("&e", '>') // yellow next marker, like the HUD's `&e> ` label prefix
         } else if fired.get(i).copied().unwrap_or(false) {
-            ("&8", 'x')
+            (code, 'x')
         } else {
-            ("&f", ' ')
+            (code, ' ')
         };
         let kind_col = match cp.trigger {
             Trigger::Aabb(_) => kind_name(cp.kind),
             Trigger::MapLoaded(_) => "Map",
         };
         let label = &cp.label;
-        lines.push(format!("{color} {marker} #{i} {kind_col:<6} \"{label}\""));
+        lines.push(format!(
+            "{marker_color} {marker} #{i} {code}{kind_col:<6} \"{label}\""
+        ));
     }
     lines
 }
