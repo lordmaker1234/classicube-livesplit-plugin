@@ -188,6 +188,13 @@ pub fn set_label(i: usize, text: String) {
     splits::editor_set_label(i, text);
 }
 
+/// `edit rename <name>`. Rename the loaded track. Non-structural string
+/// edit (no arming / block clicks), so -- like `remove` / `label` /
+/// `move` / `kind` -- it doesn't gate on edit mode.
+pub fn rename(name: String) {
+    splits::editor_rename(name);
+}
+
 /// `edit move <from> <to>`. Reorder a checkpoint within the route: the
 /// one at `from` lands at index `to`, shifting the rest. No arming /
 /// block clicks (purely index-based), so -- like `remove` / `label` --

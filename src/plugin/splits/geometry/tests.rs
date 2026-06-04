@@ -1158,6 +1158,37 @@ fn track_with_kinds(kinds: &[CheckpointKind]) -> Track {
 }
 
 #[test]
+fn set_name_renames_loaded_track() {
+    let mut state = SplitsState::default();
+    state.load(
+        Track {
+            name: "old name".into(),
+            checkpoints: vec![
+                cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (1.0, 1.0, 1.0)),
+                cp(CheckpointKind::End, (5.0, 0.0, 0.0), (6.0, 1.0, 1.0)),
+            ],
+        },
+        Some(TEST_MAP.to_string()),
+    );
+    state.set_name("new name".into()).unwrap();
+    let track = state.track.as_ref().unwrap();
+    assert_eq!(track.name, "new name");
+    // Non-structural: checkpoint count, kinds, and cursor all unchanged.
+    assert_eq!(track.checkpoints.len(), 2);
+    assert_eq!(
+        kinds(&state),
+        vec![CheckpointKind::Start, CheckpointKind::End]
+    );
+    assert_eq!(state.next_index, 0);
+}
+
+#[test]
+fn set_name_errors_when_no_track() {
+    let mut state = SplitsState::default();
+    assert!(state.set_name("anything".into()).is_err());
+}
+
+#[test]
 fn validate_pairing_accepts_no_pause_resume() {
     use CheckpointKind::{End, Split, Start};
     let t = track_with_kinds(&[Start, Split, Split, End]);

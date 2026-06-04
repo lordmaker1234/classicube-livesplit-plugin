@@ -538,6 +538,25 @@ pub fn editor_set_label(i: usize, text: String) -> bool {
     }
 }
 
+/// Rename the loaded track (`edit rename`). Non-structural, so it never
+/// re-arms the run or touches the timer. Returns `true` on success.
+pub fn editor_rename(name: String) -> bool {
+    match with_state(|s| s.set_name(name.clone())) {
+        None => {
+            chat_print("&eLiveSplit: plugin not active");
+            false
+        }
+        Some(Err(e)) => {
+            chat_print(&format!("&cLiveSplit: cannot rename track: {e}"));
+            false
+        }
+        Some(Ok(())) => {
+            chat_print(&format!("&aLiveSplit: renamed track to \"{name}\""));
+            true
+        }
+    }
+}
+
 /// Re-draw the AABB of the existing checkpoint at `i` (`edit redraw`).
 /// Like [`editor_add`], samples run-progress before mutating and
 /// notifies a connected timer if it aborted a run. Returns `true` on

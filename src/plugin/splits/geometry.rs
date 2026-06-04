@@ -549,6 +549,17 @@ impl SplitsState {
         Ok(true)
     }
 
+    /// Rename the loaded track (`edit rename`). Non-structural: the
+    /// checkpoint sequence, latch lengths, and run cursor are all untouched
+    /// (no re-arm). `Err` if no track is loaded.
+    pub fn set_name(&mut self, name: String) -> Result<()> {
+        let Some(track) = self.track.as_mut() else {
+            bail!("no track loaded");
+        };
+        track.name = name;
+        Ok(())
+    }
+
     /// Relabel the checkpoint at index `i`. Non-structural: the kind
     /// sequence, latch lengths, and run cursor are all untouched (no
     /// re-arm). `Err` if no track is loaded or `i` is out of range.

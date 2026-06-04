@@ -49,7 +49,7 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit load [filename]   (newest, or a specific .lss)");
     chat_print("&e  /client LiveSplit open               (reveal the loaded track file)");
     chat_print("&e  /client LiveSplit show [on|off]    (toggle checkpoint HUD)");
-    chat_print("&e  /client LiveSplit edit on|off | new <name>");
+    chat_print("&e  /client LiveSplit edit on|off | new <name> | rename <name>");
     chat_print("&e  /client LiveSplit edit add [i] | redraw <i> | cancel");
     chat_print("&e  /client LiveSplit edit remove <i> | move <from> <to>");
     chat_print("&e  /client LiveSplit edit kind <i> start|end|split|pause|resume|map [name]");
@@ -291,6 +291,10 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                 editor::set_label(idx, rest.join(" "));
             }
         }
+        ["edit", "rename", rest @ ..] if !rest.is_empty() => editor::rename(rest.join(" ")),
+        ["edit", "rename"] => {
+            chat_print("&cLiveSplit: usage: /client LiveSplit edit rename <name>");
+        }
         ["edit", "clear"] => editor::clear(),
         ["mb" | "messageblock", rest @ ..] if !rest.is_empty() => {
             if let Some(lines) = encode_track_or_print_error() {
@@ -357,7 +361,7 @@ impl CommandModule {
                     "&a/client LiveSplit load [filename]",
                     "&a/client LiveSplit open",
                     "&a/client LiveSplit show [on|off]",
-                    "&a/client LiveSplit edit on|off | new <name>",
+                    "&a/client LiveSplit edit on|off | new <name> | rename <name>",
                     "&a/client LiveSplit edit add [i] | redraw <i> | cancel",
                     "&a/client LiveSplit edit remove <i> | move <from> <to>",
                     "&a/client LiveSplit edit kind <i> start|end|split|pause|resume|map [name]",
