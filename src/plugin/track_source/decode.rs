@@ -58,6 +58,12 @@ thread_local! {
     static STATE: RefCell<State> = const { RefCell::new(State::Idle) };
 }
 
+/// Reset the streaming decoder to `Idle`. Called on plugin lifecycle
+/// boundaries so a stream caught mid-frame never survives Init/Reset.
+pub fn reset_state() {
+    STATE.with_borrow_mut(|s| *s = State::Idle);
+}
+
 /// Strip one leading `&X` color code (where X is ASCII alphanumeric —
 /// covers stock `&0`-`&f` and CPE custom codes like `&S`). The encoder's
 /// `MAX_LINE_CP` budget already anticipates a server-prepended color

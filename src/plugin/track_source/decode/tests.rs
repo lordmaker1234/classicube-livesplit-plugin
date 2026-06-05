@@ -14,10 +14,6 @@ use crate::plugin::{
 // top of each test.
 static SERIALIZE: Mutex<()> = Mutex::new(());
 
-fn reset_state() {
-    STATE.with(|s| *s.borrow_mut() = State::Idle);
-}
-
 fn fresh() -> std::sync::MutexGuard<'static, ()> {
     let g = SERIALIZE.lock().unwrap_or_else(|p| p.into_inner());
     reset_state();
@@ -1140,4 +1136,32 @@ fn decode_geometry_rejects_version_not_first() {
         err.contains("version line") || err.contains("must come first"),
         "{err}"
     );
+}
+
+// ---- reset_state (lifecycle boundary helper) ----
+
+#[test]
+fn reset_state_from_need_next_returns_to_idle() {
+    let _g = fresh();
+    feed_version();
+    assert_buffered(feed_chat_line("LS title T"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1 start"));
+    // State is NeedNext; reset_state drops it to Idle.
+    reset_state();
+    STATE.with(|s| assert!(matches!(*s.borrow(), State::Idle)));
+    // A stray LS line after reset errors: no version line yet.
+    let m = assert_parse_error(feed_chat_line("LS cp 0,0,0 1,1,1 stray"));
+    assert!(m.contains("version line"), "{m}");
+}
+
+#[test]
+fn reset_state_from_need_label_returns_to_idle() {
+    let _g = fresh();
+    feed_version();
+    assert_buffered(feed_chat_line("LS title T"));
+    assert_buffered(feed_chat_line("LS cp 0,0,0 1,1,1")); // no inline label -> NeedLabel
+    reset_state();
+    STATE.with(|s| assert!(matches!(*s.borrow(), State::Idle)));
+    // After reset a fresh version line re-arms the decoder normally.
+    assert_buffered(feed_chat_line("LS v1"));
 }

@@ -120,8 +120,8 @@ fn context_recreated() {
 
 /// Clear the cached waypoint list and diff key so the next [`reconcile`]
 /// rebuilds. For genuine cache-staleness only -- map change, reset, and
-/// (defensively) init / free. **Not** called on GPU context loss: the cache
-/// holds no GPU resources, so only the vertex buffer needs dropping there.
+/// free. **Not** called on GPU context loss: the cache holds no GPU
+/// resources, so only the vertex buffer needs dropping there.
 fn invalidate() {
     WAYPOINTS.with_borrow_mut(Vec::clear);
     LAST_SET.with_borrow_mut(Vec::clear);
@@ -143,14 +143,6 @@ impl LinesModule {
     /// Subscribe to GPU context events (creating the VB now). The shared
     /// render hook is installed by `HudModule`.
     pub(super) fn init() -> Self {
-        // Defensive reset: these thread-locals persist across
-        // Init -> Free -> Init in the same process (ClassiCube never
-        // `dlclose`s the .so), and an abnormal teardown can skip `free`. Clear
-        // any stale draw state so a fresh Init always starts clean -- mirrors
-        // the boxes layer's init-time selection sweep. (`subscribe` rebuilds
-        // the vertex buffer below, dropping any stale one.)
-        invalidate();
-
         let (context_lost, context_recreated) = subscribe();
         Self {
             _context_lost: context_lost,

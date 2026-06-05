@@ -75,3 +75,17 @@ fn redundant_add_keeps_climbing() {
     pause_add();
     assert_eq!(current_counter(), 4);
 }
+
+#[test]
+fn reset_counter_zeros_silently() {
+    // reset_counter sets COUNTER = 0 without emitting ResumeGameTime
+    // (unlike pause_clear_all, which emits on the non-zero -> 0 edge).
+    // Used by PauseTriggersModule::free() to wipe the counter at
+    // teardown -- there's no timer to resume at that point.
+    let _g = fresh();
+    pause_add();
+    pause_add();
+    assert_eq!(current_counter(), 2);
+    reset_counter();
+    assert_eq!(current_counter(), 0);
+}

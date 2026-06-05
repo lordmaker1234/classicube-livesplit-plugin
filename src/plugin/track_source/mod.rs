@@ -136,6 +136,16 @@ fn uninstall_message_handler() {
     // false.
 }
 
+/// Reset the data thread-locals to their initial values: the streaming
+/// decoder back to `Idle` and the re-broadcast latch off. Shared by
+/// `free()` (teardown) and `reset()` (disconnect / local-map-load clean
+/// slate). The message-handler hook slot is a resource, torn down
+/// separately via `uninstall_message_handler()` in `free()`.
+fn invalidate() {
+    decode::reset_state();
+    LOADED_THIS_MAP.set(false);
+}
+
 pub struct TrackSourceModule;
 
 impl TrackSourceModule {
@@ -153,7 +163,11 @@ impl TrackSourceModule {
 impl Module for TrackSourceModule {
     fn free(&mut self) {
         uninstall_message_handler();
-        LOADED_THIS_MAP.set(false);
+        invalidate();
+    }
+
+    fn reset(&mut self) {
+        invalidate();
     }
 
     fn on_new_map_loaded(&mut self) {

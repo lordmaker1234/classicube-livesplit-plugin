@@ -117,11 +117,11 @@ fn apply(want: Option<(IVec3, IVec3)>) {
     LAST_PREVIEW.set(want);
 }
 
-/// Remove the preview selection and reset the cache. Called on `init()`
-/// (sweeps any hot-reload leak) and `free()`.
+/// Remove the preview selection and reset the cache. Called on `free()`
+/// (teardown) and `reset()` (disconnect / local-map-load clean slate).
 pub(super) fn clear() {
     unsafe { Selections_Remove(PREVIEW_SELECTION_ID) };
-    LAST_PREVIEW.set(None);
+    invalidate();
 }
 
 /// Reset the cache without calling `Selections_Remove` — for use on map

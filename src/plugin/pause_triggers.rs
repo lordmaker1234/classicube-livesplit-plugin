@@ -64,7 +64,10 @@ pub(crate) fn current_counter() -> u32 {
     COUNTER.get()
 }
 
-#[cfg(test)]
+/// Silently force the counter to 0 (no `ResumeGameTime` emit, unlike
+/// `pause_clear_all`). Used by `free()` to wipe data state at teardown --
+/// there's no timer to resume at that point. `pub(crate)` so the splits
+/// geometry tests can zero shared counter state between cases.
 pub(crate) fn reset_counter() {
     COUNTER.set(0);
 }
@@ -79,7 +82,13 @@ impl PauseTriggersModule {
 
 impl Module for PauseTriggersModule {
     fn free(&mut self) {
-        COUNTER.set(0);
+        reset_counter();
+    }
+
+    fn reset(&mut self) {
+        // Drop any stuck pause so a disconnect / local-map-load leaves the
+        // counter at zero. Emits ResumeGameTime on the 1->0 edge if needed.
+        pause_clear_all();
     }
 
     fn on_new_map(&mut self) {

@@ -176,6 +176,14 @@ impl Module for SplitsModule {
         debug!("SplitsModule freed; track cleared");
     }
 
+    fn reset(&mut self) {
+        // Drop the in-memory track on disconnect / local-map-load so the
+        // next autoload or chat broadcast starts from a clean slate.
+        // `with_timer_reset` notifies a connected timer if `unload()`
+        // (which zeroes next_index) aborted an active run.
+        with_timer_reset(|| with_state(|s| s.unload()));
+    }
+
     fn on_new_map_loaded(&mut self) {
         // Post-teleport `last_inside[]` reset so edge-triggered AABB
         // detection works for boxes the player spawns inside. The
@@ -410,23 +418,32 @@ pub fn on_timer_event(ev: TimerEvent) {
     }
 }
 
-/// Tell a connected timer to reset after a load / structural edit
-/// aborted an in-progress run. The caller already re-armed local state
-/// (a fresh `load_track`, or an editor mutation); this just keeps the
-/// timer in sync. Silent + no-op when nothing was running or no timer
-/// is attached (the plugin is usable offline).
-pub fn reset_timer_if_was_running(was_in_progress: bool) {
-    if was_in_progress && livesplit::any_connected() {
+/// Run a mutation that may re-arm the run cursor (a fresh `load_track`,
+/// or an editor edit), then keep a connected timer in sync: if the
+/// mutation aborted an in-progress run, reset the timer too.
+///
+/// Brackets the sample-before / notify-after dance into one call so it
+/// can't be split or mis-ordered. Detection is purely state-based: every
+/// re-arming mutator zeroes the cursor on success and leaves it untouched
+/// on failure (each bails before mutating, and `move_checkpoint` rolls
+/// back), so "was running, now isn't" == "a live run got aborted" --
+/// failures and no-ops fall through without a reset. Silent + no-op when
+/// nothing was running or no timer is attached (the plugin is usable
+/// offline). Returns the mutation's own result unchanged.
+pub fn with_timer_reset<R>(mutate: impl FnOnce() -> R) -> R {
+    let was_in_progress = run_in_progress();
+    let out = mutate();
+    if was_in_progress && !run_in_progress() && livesplit::any_connected() {
         livesplit::send(Command::Reset { save_attempt: None });
         chat_print("&eLiveSplit: run reset to allow edit");
     }
+    out
 }
 
 /// Add an editor-placed AABB checkpoint, returning the index it
-/// landed at. Samples `run_in_progress()` **before** the mutation (which
-/// re-arms the cursor to 0) so an aborted run can notify the timer.
-/// Chat-prints the outcome. `None` if the plugin is mid-teardown or the
-/// mutation failed.
+/// landed at. The mutation runs inside [`with_timer_reset`], so an
+/// aborted in-progress run resets a connected timer. Chat-prints the
+/// outcome. `None` if the plugin is mid-teardown or the mutation failed.
 ///
 /// A `None` `target` (bare `edit add`) resolves to the end of the
 /// player's current map section via `geometry::append_index_for_section`
@@ -434,22 +451,23 @@ pub fn reset_timer_if_was_running(was_in_progress: bool) {
 /// the last/only section). An explicit `Some(i)` is passed through verbatim
 /// for `add_checkpoint` to clamp.
 pub fn editor_add(aabb: Aabb, label: String, target: Option<usize>) -> Option<usize> {
-    let was_in_progress = run_in_progress();
     // Resolve the live world outside the borrow: `read_world_name()` reads
     // the engine `World` static + tab-list, never `STATE` (same reason
     // `visible_aabbs()` resolves it first).
     let world = read_world_name();
-    match with_state(|s| {
-        let resolved = target.or_else(|| {
-            s.track.as_ref().map(|t| {
-                geometry::append_index_for_section(
-                    &t.checkpoints,
-                    s.starting_map.as_deref(),
-                    world.as_deref(),
-                )
-            })
-        });
-        s.add_checkpoint(aabb, label, resolved)
+    match with_timer_reset(|| {
+        with_state(|s| {
+            let resolved = target.or_else(|| {
+                s.track.as_ref().map(|t| {
+                    geometry::append_index_for_section(
+                        &t.checkpoints,
+                        s.starting_map.as_deref(),
+                        world.as_deref(),
+                    )
+                })
+            });
+            s.add_checkpoint(aabb, label, resolved)
+        })
     }) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
@@ -460,19 +478,17 @@ pub fn editor_add(aabb: Aabb, label: String, target: Option<usize>) -> Option<us
             None
         }
         Some(Ok(idx)) => {
-            reset_timer_if_was_running(was_in_progress);
             chat_print(&format!("&aLiveSplit: added checkpoint #{idx}"));
             Some(idx)
         }
     }
 }
 
-/// Remove the checkpoint at `i`. Like [`editor_add`], samples
-/// run-progress before mutating and notifies a connected timer if it
-/// aborted a run. Returns `true` on success.
+/// Remove the checkpoint at `i`. Like [`editor_add`], runs inside
+/// [`with_timer_reset`] so a connected timer resets if the edit aborted
+/// a run. Returns `true` on success.
 pub fn editor_remove(i: usize) -> bool {
-    let was_in_progress = run_in_progress();
-    match with_state(|s| s.remove_checkpoint(i)) {
+    match with_timer_reset(|| with_state(|s| s.remove_checkpoint(i))) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false
@@ -482,7 +498,6 @@ pub fn editor_remove(i: usize) -> bool {
             false
         }
         Some(Ok(())) => {
-            reset_timer_if_was_running(was_in_progress);
             chat_print(&format!("&aLiveSplit: removed checkpoint #{i}"));
             true
         }
@@ -490,8 +505,8 @@ pub fn editor_remove(i: usize) -> bool {
 }
 
 /// Reorder: move the checkpoint at `from` to index `to`. Like
-/// [`editor_add`], samples run-progress before mutating and notifies a
-/// connected timer if it aborted a run. `from == to` is a friendly no-op
+/// [`editor_add`], runs inside [`with_timer_reset`] so a connected timer
+/// resets if the edit aborted a run. `from == to` is a friendly no-op
 /// (the mutator is pure remove+insert, so the guard lives here). Returns
 /// `true` on success.
 pub fn editor_reindex(from: usize, to: usize) -> bool {
@@ -501,8 +516,7 @@ pub fn editor_reindex(from: usize, to: usize) -> bool {
         ));
         return false;
     }
-    let was_in_progress = run_in_progress();
-    match with_state(|s| s.move_checkpoint(from, to)) {
+    match with_timer_reset(|| with_state(|s| s.move_checkpoint(from, to))) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false
@@ -512,7 +526,6 @@ pub fn editor_reindex(from: usize, to: usize) -> bool {
             false
         }
         Some(Ok(())) => {
-            reset_timer_if_was_running(was_in_progress);
             chat_print(&format!("&aLiveSplit: moved checkpoint #{from} to #{to}"));
             true
         }
@@ -558,12 +571,10 @@ pub fn editor_rename(name: String) -> bool {
 }
 
 /// Re-draw the AABB of the existing checkpoint at `i` (`edit redraw`).
-/// Like [`editor_add`], samples run-progress before mutating and
-/// notifies a connected timer if it aborted a run. Returns `true` on
-/// success.
+/// Like [`editor_add`], runs inside [`with_timer_reset`] so a connected
+/// timer resets if the edit aborted a run. Returns `true` on success.
 pub fn editor_relocate(i: usize, aabb: Aabb) -> bool {
-    let was_in_progress = run_in_progress();
-    match with_state(|s| s.set_trigger(i, aabb)) {
+    match with_timer_reset(|| with_state(|s| s.set_trigger(i, aabb))) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false
@@ -573,7 +584,6 @@ pub fn editor_relocate(i: usize, aabb: Aabb) -> bool {
             false
         }
         Some(Ok(())) => {
-            reset_timer_if_was_running(was_in_progress);
             chat_print(&format!("&aLiveSplit: redrew checkpoint #{i}"));
             true
         }
@@ -581,14 +591,12 @@ pub fn editor_relocate(i: usize, aabb: Aabb) -> bool {
 }
 
 /// Retype the checkpoint at `i` (`edit kind <i> ...`). Like
-/// [`editor_relocate`], samples run-progress before the mutation (which
-/// re-arms the cursor) and notifies a connected timer if it aborted a
-/// run. Pairing isn't validated here -- the mutator defers it to the
-/// save/load gates (see [`geometry::SplitsState::set_kind`]). Returns
-/// `true` on success.
+/// [`editor_relocate`], runs inside [`with_timer_reset`] so a connected
+/// timer resets if the edit aborted a run. Pairing isn't validated here
+/// -- the mutator defers it to the save/load gates (see
+/// [`geometry::SplitsState::set_kind`]). Returns `true` on success.
 pub fn editor_set_kind(i: usize, target: RetypeTarget) -> bool {
-    let was_in_progress = run_in_progress();
-    match with_state(|s| s.set_kind(i, target)) {
+    match with_timer_reset(|| with_state(|s| s.set_kind(i, target))) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false
@@ -598,7 +606,6 @@ pub fn editor_set_kind(i: usize, target: RetypeTarget) -> bool {
             false
         }
         Some(Ok(())) => {
-            reset_timer_if_was_running(was_in_progress);
             chat_print(&format!("&aLiveSplit: retyped checkpoint #{i}"));
             true
         }
@@ -610,17 +617,17 @@ pub fn editor_set_kind(i: usize, target: RetypeTarget) -> bool {
 /// [`geometry::SplitsState::move_to_boundary`], which re-derives boundary
 /// kinds, demotes the displaced former boundary to `Split`, validates
 /// pause/resume pairing (rolling back on inversion), reallocates the
-/// latches, and re-arms the run. Like [`editor_reindex`], samples
-/// run-progress before mutating and notifies a connected timer if it
-/// aborted a run. `Ok(false)` (already the boundary) is a friendly no-op.
+/// latches, and re-arms the run. Like [`editor_reindex`], runs inside
+/// [`with_timer_reset`] so a connected timer resets if the edit aborted a
+/// run. `Ok(false)` (already the boundary) is a friendly no-op -- it
+/// leaves the cursor untouched, so `with_timer_reset` doesn't fire.
 /// Returns `true` when a real move happened.
 pub fn editor_set_boundary(i: usize, which: Boundary) -> bool {
-    let was_in_progress = run_in_progress();
     let name = match which {
         Boundary::Start => "Start",
         Boundary::End => "End",
     };
-    match with_state(|s| s.move_to_boundary(i, which)) {
+    match with_timer_reset(|| with_state(|s| s.move_to_boundary(i, which))) {
         None => {
             chat_print("&eLiveSplit: plugin not active");
             false
@@ -636,7 +643,6 @@ pub fn editor_set_boundary(i: usize, which: Boundary) -> bool {
             false
         }
         Some(Ok(true)) => {
-            reset_timer_if_was_running(was_in_progress);
             chat_print(&format!("&aLiveSplit: made checkpoint #{i} the {name}"));
             true
         }

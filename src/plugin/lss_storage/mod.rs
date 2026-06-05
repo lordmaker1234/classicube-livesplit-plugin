@@ -97,6 +97,12 @@ impl Module for LssStorageModule {
         clear_loaded_path();
         debug!("LssStorageModule freed; load callback cleared");
     }
+
+    fn reset(&mut self) {
+        // The track is dropped by SplitsModule::reset(); the path it was
+        // loaded from is now meaningless.
+        clear_loaded_path();
+    }
 }
 
 fn on_track_loaded(track: &Track, starting_map: Option<&str>) {

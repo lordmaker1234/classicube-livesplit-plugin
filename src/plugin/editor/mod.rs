@@ -87,6 +87,18 @@ pub fn is_enabled() -> bool {
     EDITOR_STATE.with_borrow(|s| s.enabled)
 }
 
+/// Reset the `EDITOR_STATE` thread-local to its initial values
+/// (`enabled = false`, no pending placement). Shared by `free()` (teardown)
+/// and `reset()` (disconnect / local-map-load clean slate). Does NOT touch
+/// the `SendBlock` hook (a resource, managed by `hook::install` /
+/// `uninstall`) or the preview selection (cleared separately via `preview`).
+fn reset_state() {
+    EDITOR_STATE.with_borrow_mut(|s| {
+        s.enabled = false;
+        s.pending = None;
+    });
+}
+
 /// `edit on` / `edit off`. Installs the `SendBlock` hook on enable and
 /// uninstalls it on disable; also clears any half-armed placement when
 /// turning off.
@@ -102,13 +114,10 @@ pub fn set_enabled(on: bool) {
         chat_print("&aLiveSplit: edit mode ON");
         chat_print("&e  /client LiveSplit edit add, then click two blocks for a checkpoint");
         // Authoring isn't a timed attempt: abandon any in-progress run so
-        // editing starts from a clean idle cursor. Sample run-progress before
-        // rearming (which zeroes the cursor) so a connected timer mid-run
-        // gets reset too. `reset_timer_if_was_running` is a silent no-op when
-        // nothing was running / no timer is attached.
-        let was_in_progress = splits::run_in_progress();
-        splits::reset_run();
-        splits::reset_timer_if_was_running(was_in_progress);
+        // editing starts from a clean idle cursor. `with_timer_reset` brackets
+        // the rearm so a connected timer mid-run gets reset too; it's a silent
+        // no-op when nothing was running / no timer is attached.
+        splits::with_timer_reset(splits::reset_run);
     } else {
         hook::uninstall();
         chat_print("&aLiveSplit: edit mode OFF");
@@ -373,9 +382,6 @@ pub struct EditorModule {
 
 impl EditorModule {
     pub fn init() -> Self {
-        // Sweep the preview id in case a prior Init leaked it (crash /
-        // abnormal teardown). Removing a non-installed id is a harmless no-op.
-        preview::clear();
         // The SendBlock hook is installed lazily on `edit on`, not here:
         // `Server.SendBlock` is set by `SPConnection_Init` /
         // `MPConnection_Init` on world load / connect, so it may still be
@@ -397,13 +403,22 @@ impl Module for EditorModule {
     fn free(&mut self) {
         preview::clear();
         hook::uninstall();
-        EDITOR_STATE.with_borrow_mut(|s| {
-            s.enabled = false;
-            s.pending = None;
-        });
+        reset_state();
         debug!("EditorModule freed; SendBlock hook uninstalled, editor state cleared");
         // `_tick` unregisters via its own Drop after `free` returns; no
         // render or tick event fires during synchronous teardown.
+    }
+
+    fn reset(&mut self) {
+        // End any authoring session on disconnect / local-map-load.
+        // `set_enabled(false)` does the meaningful work (uninstalls the
+        // hook, prints "OFF") only when edit mode was on; `reset_state()`
+        // then guarantees a clean slate regardless.
+        if is_enabled() {
+            set_enabled(false);
+        }
+        reset_state();
+        preview::clear();
     }
 
     fn on_new_map_loaded(&mut self) {

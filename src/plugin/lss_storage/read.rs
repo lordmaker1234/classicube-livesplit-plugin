@@ -81,12 +81,12 @@ pub async fn load_command(server: String, map: String, filename: Option<String>)
     match resolve_for_load(&server, &map, filename.as_deref()) {
         Ok((track, source, path)) => {
             async_manager::spawn_on_main_thread(async move {
-                let was_in_progress = splits::run_in_progress();
                 // `false` => plugin mid-teardown (`SplitsState::load`
                 // returned `None`); nothing loaded, nothing to reset.
-                if splits::load_track(track, &source) {
+                // `with_timer_reset` resets a connected timer if the load
+                // aborted an in-progress run.
+                if splits::with_timer_reset(|| splits::load_track(track, &source)) {
                     super::set_loaded_path(path);
-                    splits::reset_timer_if_was_running(was_in_progress);
                 }
             });
         }

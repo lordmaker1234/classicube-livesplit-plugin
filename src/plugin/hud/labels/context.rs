@@ -66,7 +66,7 @@ fn context_recreated() {
 }
 
 fn context_lost() {
-    TEX_VB.with_borrow_mut(|vb| drop(vb.take()));
+    drop_buffer();
     // Cached textures hold GPU ids that are now invalid; drop them so the
     // next post-recreation tick rebuilds from scratch.
     super::invalidate();

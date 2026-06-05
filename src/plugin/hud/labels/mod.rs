@@ -106,14 +106,6 @@ impl LabelsModule {
     /// font is built lazily on first label. The shared render hook is
     /// installed by `HudModule`.
     pub(super) fn init() -> Self {
-        // Defensive reset: these thread-locals persist across
-        // Init -> Free -> Init in the same process (ClassiCube never
-        // `dlclose`s the .so), and a crash-skipped free() would leave stale
-        // cached label textures + diff keys. Drop them so the first reconcile
-        // rebuilds from the new run's scoped set. (`context::subscribe`
-        // rebuilds the vertex buffer below.)
-        invalidate();
-
         let (context_lost, context_recreated) = context::subscribe();
         Self {
             _context_lost: context_lost,

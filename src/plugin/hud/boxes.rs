@@ -43,15 +43,6 @@ pub(super) struct BoxesModule;
 
 impl BoxesModule {
     pub(super) fn init() -> Self {
-        // Sweep our private id range in case a prior Init leaked
-        // selections (crash / abnormal teardown). Removing an id that
-        // isn't installed is a harmless no-op engine-side.
-        clear_all_selections();
-        // Also reset the cached snapshot. Thread-locals persist across
-        // Init -> Free -> Init (ClassiCube never `dlclose`s the .so), so a
-        // crash-skipped free() could leave a stale LAST_APPLIED that wrongly
-        // suppresses the first re-add now that the engine list was just swept.
-        invalidate();
         Self
     }
 }
@@ -59,7 +50,7 @@ impl BoxesModule {
 impl Module for BoxesModule {
     fn free(&mut self) {
         clear_all_selections();
-        LAST_APPLIED.with_borrow_mut(Vec::clear);
+        invalidate();
         debug!("checkpoint boxes cleared");
     }
 

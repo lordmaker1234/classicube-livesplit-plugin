@@ -2342,3 +2342,22 @@ fn includes_map_unrelated_map_returns_false() {
     state.load(track, Some("spawn".to_string()));
     assert!(!state.includes_map("unrelated_map"));
 }
+
+#[test]
+fn unload_leaves_no_track_and_run_not_in_progress() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    // Fire Start to put the run mid-flight (next_index > 0).
+    tstep(&mut state, v(1.0, 0.0, 1.0), Some(TEST_MAP), |_| {});
+    assert!(
+        state.next_index > 0,
+        "must be mid-run after entering Start box"
+    );
+    state.unload();
+    assert!(state.track.is_none());
+    assert_eq!(state.next_index, 0);
+    // The run_in_progress formula is `next_index > 0 && next_index < fired.len()`.
+    // After unload both fired and last_inside are empty, so the formula is false.
+    assert!(state.fired.is_empty());
+    assert!(state.last_inside.is_empty());
+}
