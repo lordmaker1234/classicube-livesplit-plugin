@@ -8,16 +8,15 @@ use std::{
 
 use classicube_helpers::{
     entities::{ENTITY_SELF_ID, Entity},
-    tab_list::TabListEntry,
     tick::TickEventHandler,
 };
-use classicube_sys::World;
 use tracing::{debug, info};
 
 use crate::{
     chat_print,
     plugin::{
         livesplit::{self, Command, TimerEvent},
+        map,
         module::Module,
         pause_triggers,
         splits::geometry::{
@@ -64,6 +63,11 @@ impl SplitsModule {
         let state = Rc::new(RefCell::new(SplitsState::default()));
         STATE.with_borrow_mut(|s| *s = Some(state.clone()));
 
+        // Map-change detection is owned by `MapModule`; it fires
+        // `on_map_change` on a settled-map edge before this module's tick
+        // runs in the same frame (see `plugin::mod` ordering).
+        map::set_splits_callback(on_map_change);
+
         let mut tick = TickEventHandler::new();
         {
             let state = state.clone();
@@ -87,7 +91,7 @@ impl SplitsModule {
                     raw_size
                 };
                 let player_box = geometry::player_bounds(feet, size);
-                let world = read_world_name();
+                let world = map::current_map();
                 let mut state = state.borrow_mut();
                 // When disconnected from every timer, AABB / MapLoaded
                 // triggers chat-print once and don't actually fire: we
@@ -135,10 +139,11 @@ impl SplitsModule {
                         pause_triggers::pause_sub();
                     }
                 };
-                // Map-change detection runs before the AABB walk so a
-                // `MapLoaded` Split / End advances `next_index` first;
-                // `step` then sees the updated cursor for the same tick.
-                observe_map(&mut state, world.as_deref(), &send);
+                // Map-change detection (`observe_map` -> `step_on_map_loaded`)
+                // is driven by `MapModule`'s edge tick via `on_map_change`,
+                // which runs *before* this tick in the same frame (map is
+                // constructed before splits), so the AABB walk below already
+                // sees any `next_index` a `MapLoaded` Split / End advanced.
                 step(
                     &mut state,
                     player_box,
@@ -166,6 +171,9 @@ impl SplitsModule {
 
 impl Module for SplitsModule {
     fn free(&mut self) {
+        // Stop receiving map-change edges before dropping our state, so the
+        // map tick can't call `on_map_change` against a torn-down `STATE`.
+        map::clear_splits_callback();
         // Drop the loaded track so any closure call between now and the
         // TickEventHandler::Drop a moment later is a no-op (step()
         // short-circuits on no track).
@@ -173,7 +181,7 @@ impl Module for SplitsModule {
         STATE.with_borrow_mut(|s| {
             s.take();
         });
-        debug!("SplitsModule freed; track cleared");
+        debug!("SplitsModule freed; track cleared, map callback cleared");
     }
 
     fn reset(&mut self) {
@@ -196,32 +204,44 @@ impl Module for SplitsModule {
     }
 }
 
-/// Snapshot the current map name. In singleplayer / file-loaded worlds
-/// the engine populates `World.Name` directly. The classic / CPE
-/// network protocol carries no map-name packet, so on multiplayer
-/// `World.Name` is always empty; MCGalaxy and compatible servers
-/// instead put `"On <mapname>"` in the local player's tab-list group
-/// (it's the section header the tab UI groups players by). Read that
-/// and strip the prefix.
-fn read_world_name() -> Option<String> {
-    // SAFETY: `World` is the engine's `static mut _WorldData`. We're
-    // called from `on_new_map_loaded` / the tick callback on the main
-    // thread. `cc_string`'s `Display` impl copies through the buffer
-    // pointer into an owned `String`. `&raw const` avoids creating an
-    // `&'static mut` (the Rust 2024 `static_mut_refs` lint).
-    let world_ptr = &raw const World;
-    let name = unsafe { (*world_ptr).Name.to_string() };
-    if !name.is_empty() {
-        return Some(name);
-    }
-
-    let entry = unsafe { TabListEntry::from_id(ENTITY_SELF_ID) }?;
-    let group = entry.get_group();
-    let map = group.strip_prefix("On ")?.trim();
-    if map.is_empty() {
-        None
-    } else {
-        Some(map.to_owned())
+/// Map-change callback registered with `MapModule`, fired on a settled-map
+/// edge (see `map::observe`). Runs the connected/snapshot/rollback dance --
+/// the map-load counterpart of the AABB `step` dance in the tick -- around
+/// [`observe_map`]: when no timer is connected, a `MapLoaded` Start / Split
+/// / End "fires" once (chat warning) but `fired[]` / `next_index` are rolled
+/// back so a later-connecting timer can start the run fresh; edge state
+/// (`last_seen_map`) still advances either way.
+///
+/// Fires *before* this module's AABB-`step` tick in the same frame (`map`
+/// is constructed before `splits`), so `step` sees the cursor this already
+/// advanced -- preserving the former back-to-back `observe_map` then `step`.
+/// No-op when the plugin is mid-teardown (`with_state` returns `None`).
+fn on_map_change(map_name: &str) {
+    let connected = livesplit::any_connected();
+    let rolled_back = with_state(|state| {
+        let snapshot = (!connected).then(|| (state.fired.clone(), state.next_index));
+        let any_fired = Cell::new(false);
+        let send = |cmd: Command| {
+            any_fired.set(true);
+            if connected {
+                livesplit::send(cmd);
+            }
+        };
+        observe_map(state, Some(map_name), &send);
+        if any_fired.get()
+            && let Some((fired, next_index)) = snapshot
+        {
+            state.fired = fired;
+            state.next_index = next_index;
+            true
+        } else {
+            false
+        }
+    });
+    if rolled_back == Some(true) {
+        chat_print(
+            "&cLiveSplit: split fired but no timer connected (run /client LiveSplit status)",
+        );
     }
 }
 
@@ -242,7 +262,7 @@ pub fn load_fixture() {
     }
     let n = track.checkpoints.len();
     let name = track.name.clone();
-    let starting_map = read_world_name();
+    let starting_map = map::current_map();
     info!(?starting_map, "loading fixture track:\n{track:#?}");
     if with_state(|s| s.load(track.clone(), starting_map.clone())).is_none() {
         chat_print("&eLiveSplit: plugin not active");
@@ -272,7 +292,7 @@ pub fn load_track(track: Track, source: &str) -> bool {
     }
     let n = track.checkpoints.len();
     let name = track.name.clone();
-    let starting_map = read_world_name();
+    let starting_map = map::current_map();
     info!(?starting_map, source, "loading track:\n{track:#?}");
     if with_state(|s| s.load(track.clone(), starting_map.clone())).is_none() {
         return false;
@@ -287,7 +307,7 @@ pub fn load_track(track: Track, source: &str) -> bool {
 }
 
 /// Create and load a fresh empty track named `name` (editor `edit new`).
-/// Scoped to the current world (`read_world_name()`), cursor re-armed to 0.
+/// Scoped to the current world (`map::current_map()`), cursor re-armed to 0.
 /// Fires `LOAD_CALLBACK` like the other load paths -- the lss autosave
 /// short-circuits on the empty track (see `on_track_loaded`). Returns
 /// `false` only if the plugin is mid-teardown.
@@ -297,7 +317,7 @@ pub fn new_track(name: String) -> bool {
         checkpoints: Vec::new(),
     };
     // An empty track trivially passes pause/resume pairing; no validate call.
-    let starting_map = read_world_name();
+    let starting_map = map::current_map();
     info!(?starting_map, "creating new empty track \"{name}\"");
     if with_state(|s| s.load(track.clone(), starting_map.clone())).is_none() {
         chat_print("&eLiveSplit: plugin not active");
@@ -323,7 +343,7 @@ pub fn current_track() -> Option<Track> {
 /// their kind, label, and an "is the next eligible checkpoint" flag, in
 /// checkpoint order -- the boxes the HUD should draw, the text it floats
 /// above them, and which one to highlight as the run's next target.
-/// Resolves the live map name via `read_world_name()` and walks the
+/// Resolves the live map name via `map::current_map()` and walks the
 /// loaded track's implicit scope (see `geometry::aabbs_on_map`). Empty
 /// when no track is loaded, the plugin is mid-teardown, or the current
 /// map can't be resolved.
@@ -332,10 +352,10 @@ pub fn current_track() -> Option<Track> {
 /// from the moment a track loads: pre-run (`next_index == 0`) the Start
 /// checkpoint is flagged; post-run (`next_index == n`) nothing matches.
 pub fn visible_aabbs() -> Vec<(usize, CheckpointKind, Aabb, String, bool)> {
-    // Resolve the map name outside `with_state`: `read_world_name()`
+    // Resolve the map name outside `with_state`: `map::current_map()`
     // reads the engine `World` static + tab-list, never `STATE`, so
     // keeping it out of the closure avoids nesting a borrow.
-    let world = read_world_name();
+    let world = map::current_map();
     with_state(|s| {
         let next_index = Some(s.next_index);
         s.track.as_ref().map_or_else(Vec::new, |t| {
@@ -370,11 +390,12 @@ pub fn track_includes_map(map_name: &str) -> bool {
     with_state(|s| s.includes_map(map_name)).unwrap_or(false)
 }
 
-/// Snapshot the current map name (engine `World.Name` in singleplayer
-/// / file-loaded, tab-list group prefix on multiplayer). Returns
-/// `None` if neither source resolves a non-empty name.
+/// Snapshot the live map name. Thin re-export of [`map::current_map`] kept
+/// for the existing `splits::current_map()` callers (editor `set_kind_map`,
+/// the lss-storage load command). Distinct from [`starting_map`] (the world
+/// the loaded track is scoped to, which may differ after a map change).
 pub fn current_map() -> Option<String> {
-    read_world_name()
+    map::current_map()
 }
 
 /// The map the loaded track is scoped to -- the world name captured at
@@ -451,10 +472,10 @@ pub fn with_timer_reset<R>(mutate: impl FnOnce() -> R) -> R {
 /// the last/only section). An explicit `Some(i)` is passed through verbatim
 /// for `add_checkpoint` to clamp.
 pub fn editor_add(aabb: Aabb, label: String, target: Option<usize>) -> Option<usize> {
-    // Resolve the live world outside the borrow: `read_world_name()` reads
+    // Resolve the live world outside the borrow: `map::current_map()` reads
     // the engine `World` static + tab-list, never `STATE` (same reason
     // `visible_aabbs()` resolves it first).
-    let world = read_world_name();
+    let world = map::current_map();
     match with_timer_reset(|| {
         with_state(|s| {
             let resolved = target.or_else(|| {

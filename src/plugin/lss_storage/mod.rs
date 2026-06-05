@@ -5,15 +5,14 @@ pub mod write;
 
 use std::{cell::RefCell, path::PathBuf};
 
-use classicube_helpers::{async_manager, tick::TickEventHandler};
-use classicube_sys::Server;
+use classicube_helpers::async_manager;
 use tracing::debug;
 
 use crate::{
     chat::chat_print_async,
     chat_print,
     plugin::{
-        editor,
+        editor, map,
         module::Module,
         splits::{self, geometry::Track},
     },
@@ -45,57 +44,32 @@ fn clear_loaded_path() {
     LOADED_LSS_PATH.with_borrow_mut(|p| *p = None);
 }
 
-pub struct LssStorageModule {
-    // Owned for its Drop side-effect: TickEventHandler::Drop unregisters
-    // the closure from the helpers crate's tick callback list.
-    _tick: TickEventHandler,
-}
+pub struct LssStorageModule;
 
 impl LssStorageModule {
     pub fn init() -> Self {
         splits::set_load_callback(on_track_loaded);
 
-        // Autoload is driven from the tick rather than `on_new_map_loaded`
-        // for the same reason `splits::observe_map` is: at the moment
-        // `MapLoaded` fires on multiplayer, `World.Name` has been zeroed
-        // by `World_SetNewMap` and the server hasn't yet pushed the
-        // updated `"On <map>"` tab-list group, so the name resolved at
-        // the event would be the *previous* map's. Polling until both
-        // signals settle gives us the correct destination directory.
-        let mut tick = TickEventHandler::new();
-        let mut last_seen_map: Option<String> = None;
-        tick.on(move |_event| {
-            let cur = splits::current_map();
-            if last_seen_map == cur {
-                return;
-            }
-            last_seen_map.clone_from(&cur);
-            let Some(map) = cur else {
-                return;
-            };
-            if splits::run_in_progress() {
-                debug!("autoload skipped: run in progress");
-                return;
-            }
-            if editor::is_enabled() && splits::track_includes_map(&map) {
-                debug!("autoload skipped: editing a track that includes this map");
-                return;
-            }
-            let Some(server) = current_server_display() else {
-                return;
-            };
-            async_manager::spawn(read::try_autoload(server, map));
-        });
+        // Autoload runs off `MapModule`'s settled-map edge rather than
+        // `on_new_map_loaded` because at the moment `MapLoaded` fires on
+        // multiplayer, `World.Name` has been zeroed by `World_SetNewMap`
+        // and the server hasn't yet pushed the updated `"On <map>"`
+        // tab-list group, so the name resolved at the event would be the
+        // *previous* map's. The map module polls until both signals settle.
+        // It fires after the splits callback on the same edge, so
+        // `run_in_progress()` already reflects any map-load split.
+        map::set_autoload_callback(autoload_on_map_change);
 
-        Self { _tick: tick }
+        Self
     }
 }
 
 impl Module for LssStorageModule {
     fn free(&mut self) {
         splits::clear_load_callback();
+        map::clear_autoload_callback();
         clear_loaded_path();
-        debug!("LssStorageModule freed; load callback cleared");
+        debug!("LssStorageModule freed; load + autoload callbacks cleared");
     }
 
     fn reset(&mut self) {
@@ -103,6 +77,27 @@ impl Module for LssStorageModule {
         // loaded from is now meaningless.
         clear_loaded_path();
     }
+}
+
+/// Autoload callback registered with `MapModule`. Fired on a settled-map
+/// edge with the new map name. Picks the newest `.lss` for the
+/// `(server, map)` directory and loads it -- unless a run is in progress, or
+/// the editor is mid-edit on a track that already includes this map (so
+/// crossing into another of its maps doesn't clobber the edit). Files are
+/// never modified after creation.
+fn autoload_on_map_change(map_name: &str) {
+    if splits::run_in_progress() {
+        debug!("autoload skipped: run in progress");
+        return;
+    }
+    if editor::is_enabled() && splits::track_includes_map(map_name) {
+        debug!("autoload skipped: editing a track that includes this map");
+        return;
+    }
+    let Some(server) = map::current_server_display() else {
+        return;
+    };
+    async_manager::spawn(read::try_autoload(server, map_name.to_owned()));
 }
 
 fn on_track_loaded(track: &Track, starting_map: Option<&str>) {
@@ -120,7 +115,7 @@ fn on_track_loaded(track: &Track, starting_map: Option<&str>) {
         return;
     }
 
-    let Some(server) = current_server_display() else {
+    let Some(server) = map::current_server_display() else {
         debug!("save skipped: no server name");
         return;
     };
@@ -149,7 +144,7 @@ pub fn save_current_track() {
         chat_print("&eLiveSplit: nothing to save yet (track has no checkpoints)");
         return;
     }
-    let Some(server) = current_server_display() else {
+    let Some(server) = map::current_server_display() else {
         chat_print("&cLiveSplit: cannot resolve server name to save under");
         return;
     };
@@ -167,7 +162,7 @@ pub fn save_current_track() {
 /// the disk-reading task. Not gated on `require_connected()` /
 /// `run_in_progress()` -- the command is explicit.
 pub fn load_track_command(filename: Option<String>) {
-    let Some(server) = current_server_display() else {
+    let Some(server) = map::current_server_display() else {
         chat_print("&cLiveSplit: cannot resolve server name to load from");
         return;
     };
@@ -222,7 +217,7 @@ pub fn open_track_location() {
     // `(server, starting_map)` -- the same scope `/client LiveSplit save`
     // writes to (the chat-load autosave in `on_track_loaded` already
     // created it for a chat-sourced track).
-    let Some(server) = current_server_display() else {
+    let Some(server) = map::current_server_display() else {
         chat_print("&cLiveSplit: cannot resolve server name");
         return;
     };
@@ -241,24 +236,4 @@ pub fn open_track_location() {
             chat_print_async(format!("&cLiveSplit: failed to open folder: {e}"));
         }
     });
-}
-
-/// Resolve the unsanitized display server name. Returns
-/// `"singleplayer"` placeholder when in singleplayer mode (the wire
-/// `Server.Name` is empty there). Color codes are left in place for
-/// the writer's display-only consumer; the path sanitizer strips
-/// them later when building filesystem paths.
-fn current_server_display() -> Option<String> {
-    // SAFETY: `Server` is the engine's `static mut _ServerConnectionData`.
-    // We're called on the main game thread (via `on_track_loaded` from
-    // `splits::load_track`, or via `on_new_map_loaded` dispatch). `&raw`
-    // avoids creating an `&'static mut` ref (Rust 2024 `static_mut_refs`
-    // lint). `cc_string`'s `Display` impl copies through the buffer.
-    let server_ptr = &raw const Server;
-    let is_sp = unsafe { (*server_ptr).IsSinglePlayer } != 0;
-    if is_sp {
-        return Some("singleplayer".to_owned());
-    }
-    let name = unsafe { (*server_ptr).Name.to_string() };
-    if name.is_empty() { None } else { Some(name) }
 }

@@ -20,7 +20,7 @@ use std::{cell::Cell, mem};
 
 use classicube_sys::{IVec3, PackedCol_Make, RayTracer, Selections_Add, Selections_Remove};
 
-use crate::plugin::splits::geometry;
+use crate::plugin::{module::Module, splits::geometry};
 
 /// Selection id reserved for the rubber-band preview. `hud/boxes.rs` owns
 /// `200..=254`; this sits one above that range.
@@ -128,4 +128,32 @@ pub(super) fn clear() {
 /// change, where the engine has already wiped its own selection list.
 pub(super) fn invalidate() {
     LAST_PREVIEW.set(None);
+}
+
+/// Owns the rubber-band preview's lifecycle as an `EditorModule` child, so
+/// teardown / reset / map-change invalidation flow through the recursive
+/// `Module` dispatch instead of imperative calls in the parent. The
+/// per-frame [`reconcile`] stays a free fn driven by `EditorModule`'s tick
+/// (mirroring how `hud/boxes.rs` exposes `reconcile` for `HudModule`'s
+/// tick) -- there's no per-frame `Module` hook.
+pub(super) struct PreviewModule;
+
+impl PreviewModule {
+    pub(super) fn init() -> Self {
+        Self
+    }
+}
+
+impl Module for PreviewModule {
+    fn free(&mut self) {
+        clear();
+    }
+
+    fn reset(&mut self) {
+        clear();
+    }
+
+    fn on_new_map_loaded(&mut self) {
+        invalidate();
+    }
 }

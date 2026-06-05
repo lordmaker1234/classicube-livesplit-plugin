@@ -14,7 +14,7 @@ use std::{cell::Cell, os::raw::c_int, ptr};
 
 use classicube_sys::{BlockID, Server};
 
-use crate::plugin::{editor, is_plugin_active};
+use crate::plugin::{editor, is_plugin_active, module::Module};
 
 type SendBlockFn = unsafe extern "C" fn(c_int, c_int, c_int, BlockID, BlockID);
 
@@ -116,5 +116,57 @@ pub(super) fn uninstall() {
     if is_our_handler(current_slot()) {
         let prior = OLD_SEND_BLOCK.with(Cell::take);
         set_slot(prior);
+    }
+}
+
+/// Owns the `Server.SendBlock` hook's resource lifecycle as an
+/// `EditorModule` child. Only the hooks that map cleanly onto the trait
+/// live here: `free` and `reset` uninstall, and `on_new_map_loaded`
+/// re-asserts the hook after a reconnect / world reload re-points the slot.
+/// Install stays **lazy** -- the slot is unpopulated at construction, so
+/// `set_enabled` / `new_track` still call [`install`] / [`uninstall`]
+/// imperatively, and `consume_click` (read+mutate of editor state) stays in
+/// [`super`].
+///
+/// The `reset` override is **redundant**: `EditorModule::reset` already
+/// calls `set_enabled(false)` (-> [`uninstall`]) when edit mode was on --
+/// the only state in which our hook is on top. It's kept anyway so this
+/// child uninstalls its own resource on the clean-slate path without relying
+/// on the parent. It's safe precisely because it's redundant: [`uninstall`]
+/// is a no-op whenever we're not on top (foreign handler stacked over us, or
+/// already uninstalled), so the unconditional call can't disturb the
+/// fall-through chain in the reset-while-disabled case.
+pub(super) struct HookModule;
+
+impl HookModule {
+    pub(super) fn init() -> Self {
+        // No install here: `Server.SendBlock` may still be unpopulated at
+        // plugin construction; `edit on` installs lazily.
+        Self
+    }
+}
+
+impl Module for HookModule {
+    fn free(&mut self) {
+        uninstall();
+    }
+
+    fn reset(&mut self) {
+        // Redundant safety net: `EditorModule::reset` already uninstalls via
+        // `set_enabled(false)` when edit mode was on (the only state in which
+        // we're on top). `uninstall` is a no-op when we're not on top, so
+        // calling it unconditionally on the clean-slate path is always safe
+        // and makes this child own its own teardown rather than leaning on
+        // the parent.
+        uninstall();
+    }
+
+    fn on_new_map_loaded(&mut self) {
+        // Reconnect / world reload (`MPConnection_Init`) re-points
+        // `Server.SendBlock`, dropping our hook. Re-assert it while edit
+        // mode is on.
+        if editor::is_enabled() {
+            install();
+        }
     }
 }

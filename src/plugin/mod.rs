@@ -5,6 +5,7 @@ pub mod hud;
 pub mod livesplit;
 pub mod logger;
 pub mod lss_storage;
+pub mod map;
 pub mod module;
 pub mod pause_triggers;
 pub mod splits;
@@ -15,8 +16,8 @@ use std::cell::RefCell;
 use crate::plugin::{
     async_manager::AsyncManagerModule, command::CommandModule, editor::EditorModule,
     hud::HudModule, livesplit::LiveSplitModule, logger::LoggerModule,
-    lss_storage::LssStorageModule, module::Module, pause_triggers::PauseTriggersModule,
-    splits::SplitsModule, track_source::TrackSourceModule,
+    lss_storage::LssStorageModule, map::MapModule, module::Module,
+    pause_triggers::PauseTriggersModule, splits::SplitsModule, track_source::TrackSourceModule,
 };
 
 thread_local!(
@@ -27,6 +28,7 @@ struct MainModule {
     logger: LoggerModule,
     async_manager: AsyncManagerModule,
     livesplit: LiveSplitModule,
+    map: MapModule,
     splits: SplitsModule,
     pause_triggers: PauseTriggersModule,
     track_source: TrackSourceModule,
@@ -41,6 +43,7 @@ impl MainModule {
         let logger = LoggerModule::init();
         let async_manager = AsyncManagerModule::init();
         let livesplit = LiveSplitModule::init();
+        let map = MapModule::init();
         let splits = SplitsModule::init();
         let pause_triggers = PauseTriggersModule::init();
         let track_source = TrackSourceModule::init();
@@ -53,6 +56,7 @@ impl MainModule {
             logger,
             async_manager,
             livesplit,
+            map,
             splits,
             pause_triggers,
             track_source,
@@ -66,6 +70,20 @@ impl MainModule {
 
 impl Module for MainModule {
     fn children(&mut self) -> Vec<&mut dyn Module> {
+        // `map` sits **before** `splits` so its tick (constructed first,
+        // hence fired first by the helpers crate's registration-order
+        // dispatch) detects a settled-map edge and drives
+        // `step_on_map_loaded` (via the splits callback) *before*
+        // `splits`'s own AABB-`step` tick runs in the same frame — the
+        // map-load Split must advance `next_index` so the AABB walk sees
+        // the updated cursor. It also owns the single map-change observer
+        // the autoload + editor leave-track checks subscribe to, fired in
+        // the fixed order splits -> autoload -> editor. Reverse-dispatch
+        // teardown frees `editor`/`lss_storage`/`splits` (each clearing
+        // its map callback slot) before `map`, so the map tick can never
+        // call into a half-freed subscriber. Do not move `map` after
+        // `splits` — that would break auto-splitting on map change.
+        //
         // `pause_triggers` sits **after** `splits` so reverse-dispatch
         // (newest-first) fires `Command::ResumeGameTime` from
         // `pause_triggers.on_new_map_loaded` *before*
@@ -102,6 +120,7 @@ impl Module for MainModule {
             &mut self.logger,
             &mut self.async_manager,
             &mut self.livesplit,
+            &mut self.map,
             &mut self.splits,
             &mut self.pause_triggers,
             &mut self.track_source,

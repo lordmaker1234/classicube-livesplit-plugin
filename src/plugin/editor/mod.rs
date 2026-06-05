@@ -26,9 +26,11 @@ use classicube_helpers::tick::TickEventHandler;
 use classicube_sys::{BlockID, Game_UpdateBlock, IVec3};
 use tracing::debug;
 
+use self::{hook::HookModule, preview::PreviewModule};
 use crate::{
     chat_print,
     plugin::{
+        map,
         module::Module,
         splits::{
             self,
@@ -124,30 +126,18 @@ pub fn set_enabled(on: bool) {
     }
 }
 
-/// Tick helper: when the live world name changes to a map that is NOT part
-/// of the loaded track (neither its `starting_map` nor a
-/// `Trigger::MapLoaded` target) while edit mode is on, turn edit mode off.
-/// Detection is tick-driven because at `OnNewMapLoaded` time `World.Name`
-/// is zeroed and (multiplayer) the tab-list group still names the previous
-/// map; `splits::current_map()` only settles a few ticks later.
-fn disable_if_left_track(last: &mut Option<String>) {
-    let cur = splits::current_map();
-    if *last == cur {
-        return;
-    }
-    // Advance the latch before any guard: fire at most once per transition
-    // and keep the latch current even while edit mode is off so a later
-    // re-enable doesn't mis-fire on the next tick.
-    last.clone_from(&cur);
-    // A transient `None` mid-load must never disable; re-evaluate when the
-    // real name arrives next tick.
-    let Some(map) = cur else {
-        return;
-    };
+/// Map-change callback registered with `MapModule`. Fired on a settled-map
+/// edge with the new map name; when that map is NOT part of the loaded track
+/// (neither its `starting_map` nor a `Trigger::MapLoaded` target) and edit
+/// mode is on, turn edit mode off. The map module owns the edge latch and
+/// the None-ignore rule, so this just acts on the settled name (the
+/// settling matters because at `OnNewMapLoaded` time `World.Name` is zeroed
+/// and the tab-list group still names the previous map).
+fn disable_if_left_track(map_name: &str) {
     if !is_enabled() {
         return;
     }
-    if splits::track_includes_map(&map) {
+    if splits::track_includes_map(map_name) {
         return;
     }
     chat_print("&eLiveSplit: left the track's maps -- edit mode auto-disabled");
@@ -377,34 +367,56 @@ fn revert_block(x: c_int, y: c_int, z: c_int, old: BlockID) {
 }
 
 pub struct EditorModule {
+    // Resource-lifecycle children: `hook` owns the `Server.SendBlock`
+    // splice, `preview` owns the rubber-band selection. Both implement
+    // `Module` so their teardown / reset / map-change invalidation flow
+    // through recursive dispatch. `children()` returns them in
+    // `[hook, preview]` order so reverse-dispatch frees preview then hook
+    // -- matching the former imperative `preview::clear(); hook::uninstall()`
+    // sequence.
+    hook: HookModule,
+    preview: PreviewModule,
+    // Owned for its Drop side-effect: TickEventHandler::Drop unregisters
+    // the closure. Drives the per-frame `preview::reconcile()` (no
+    // per-frame `Module` hook exists), mirroring `HudModule`'s tick driving
+    // its children's `reconcile`.
     _tick: TickEventHandler,
 }
 
 impl EditorModule {
     pub fn init() -> Self {
-        // The SendBlock hook is installed lazily on `edit on`, not here:
-        // `Server.SendBlock` is set by `SPConnection_Init` /
-        // `MPConnection_Init` on world load / connect, so it may still be
-        // unpopulated at plugin construction.
+        let hook = HookModule::init();
+        let preview = PreviewModule::init();
+
+        // Leave-the-track auto-disable runs off `MapModule`'s settled-map
+        // edge (fired last, after splits / autoload). The per-frame tick is
+        // kept only for the rubber-band `preview::reconcile()`.
+        map::set_editor_callback(disable_if_left_track);
+
         let mut tick = TickEventHandler::new();
-        // Latches the live world name across ticks so we fire at most once
-        // per map transition and keep the latch current even while edit
-        // mode is off.
-        let mut last_seen_map: Option<String> = None;
         tick.on(move |_| {
             preview::reconcile();
-            disable_if_left_track(&mut last_seen_map);
         });
-        Self { _tick: tick }
+        Self {
+            hook,
+            preview,
+            _tick: tick,
+        }
     }
 }
 
 impl Module for EditorModule {
+    fn children(&mut self) -> Vec<&mut dyn Module> {
+        vec![&mut self.hook, &mut self.preview]
+    }
+
     fn free(&mut self) {
-        preview::clear();
-        hook::uninstall();
+        // `hook` / `preview` children already cleared their own resources
+        // (reverse-dispatch runs them before this); here we stop receiving
+        // map-change edges and clear the editor's own thread-local state.
+        map::clear_editor_callback();
         reset_state();
-        debug!("EditorModule freed; SendBlock hook uninstalled, editor state cleared");
+        debug!("EditorModule freed; editor state + map callback cleared");
         // `_tick` unregisters via its own Drop after `free` returns; no
         // render or tick event fires during synchronous teardown.
     }
@@ -413,25 +425,19 @@ impl Module for EditorModule {
         // End any authoring session on disconnect / local-map-load.
         // `set_enabled(false)` does the meaningful work (uninstalls the
         // hook, prints "OFF") only when edit mode was on; `reset_state()`
-        // then guarantees a clean slate regardless.
+        // then guarantees a clean slate regardless. The `preview` child's
+        // own `reset()` clears the rubber-band selection.
         if is_enabled() {
             set_enabled(false);
         }
         reset_state();
-        preview::clear();
     }
 
     fn on_new_map_loaded(&mut self) {
         // A half-armed placement holds corner coords from the old map;
-        // they're meaningless after a map change. Invalidate the preview
-        // cache -- the engine already wiped its selection list on map load.
+        // they're meaningless after a map change. The `preview` child
+        // invalidates its cache and `hook` re-asserts the SendBlock splice
+        // via their own `on_new_map_loaded` hooks.
         EDITOR_STATE.with_borrow_mut(|s| s.pending = None);
-        preview::invalidate();
-        // Reconnect / world reload re-points `Server.SendBlock` (e.g.
-        // `MPConnection_Init`), dropping our hook. Re-assert it while
-        // edit mode is on.
-        if EDITOR_STATE.with_borrow(|s| s.enabled) {
-            hook::install();
-        }
     }
 }
