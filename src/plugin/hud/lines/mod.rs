@@ -6,14 +6,13 @@
 //! camera-facing ribbon quad between each consecutive pair of waypoints so the
 //! player can follow the route to the next checkpoint.
 //!
-//! **Rendering** mirrors the label-billboard layer:
-//! - An `OwnedScreen` hook running at `HUD - 3` (below labels at `HUD - 2`
-//!   and chat-bubbles at `HUD - 1`, so the floating text stays legible on top
-//!   of each line segment).
+//! **Rendering** shares the single `OwnedScreen` hook owned by `HudModule`
+//! (in `hud/render.rs`). That hook invokes [`draw_pass`] first (so line
+//! segments draw below labels), then the labels pass. Shared state the caller
+//! sets up: 3D depth/blend/PROJ/VIEW, then 2D-ortho restore afterwards. This
+//! pass only sets `VERTEX_FORMAT_COLOURED` and streams one quad per segment.
 //! - 3D state: depth test **on** (lines are occluded by terrain, like the
 //!   text), depth write **off**, alpha blending **on**.
-//! - The PROJ/VIEW matrices are loaded from `Gfx.Projection` / `Gfx.View`,
-//!   then restored to 2D ortho after drawing.
 //! - One `VERTEX_FORMAT_COLOURED` dynamic vertex buffer, sized 4 (streamed
 //!   one quad at a time, like `draw_billboard`).
 //!
@@ -34,15 +33,13 @@
 #[cfg(test)]
 mod tests;
 
-use std::{cell::RefCell, ffi::c_void, ptr};
+use std::{cell::RefCell, ptr};
 
 use classicube_helpers::events::gfx::{ContextLostEventHandler, ContextRecreatedEventHandler};
 use classicube_sys::{
-    Camera, Game, Gfx, Gfx_DrawVb_IndexedTris, Gfx_LoadMatrix, Gfx_LockDynamicVb,
-    Gfx_SetAlphaBlending, Gfx_SetAlphaTest, Gfx_SetDepthTest, Gfx_SetDepthWrite,
-    Gfx_SetVertexFormat, Gfx_UnlockDynamicVb, GfxResourceID, Matrix, MatrixType__MATRIX_PROJ,
-    MatrixType__MATRIX_VIEW, OwnedGfxVertexBuffer, OwnedScreen, PackedCol_Make, Vec3,
-    VertexColoured, VertexFormat__VERTEX_FORMAT_COLOURED, screen::Priority,
+    Camera, Gfx_DrawVb_IndexedTris, Gfx_LockDynamicVb, Gfx_SetVertexFormat, Gfx_UnlockDynamicVb,
+    GfxResourceID, OwnedGfxVertexBuffer, PackedCol_Make, Vec3, VertexColoured,
+    VertexFormat__VERTEX_FORMAT_COLOURED,
 };
 use tracing::debug;
 
@@ -133,18 +130,18 @@ fn invalidate() {
 // ---- module struct ----
 
 /// Owns the RAII registration handles. The vertex buffer, waypoints, and diff
-/// key live in thread-locals (accessible from the `extern "C"` render hook
-/// and context callbacks); only the handles themselves -- which are never
-/// touched from inside a callback -- are fields.
+/// key live in thread-locals (accessible from the context callbacks and
+/// [`draw_pass`]); only the handles themselves -- which are never touched
+/// from inside a callback -- are fields. The shared render hook is owned by
+/// `HudModule` and is not a field here.
 pub(super) struct LinesModule {
-    _screen: OwnedScreen,
     _context_lost: ContextLostEventHandler,
     _context_recreated: ContextRecreatedEventHandler,
 }
 
 impl LinesModule {
-    /// Subscribe to GPU context events (creating the VB now) and register the
-    /// render hook.
+    /// Subscribe to GPU context events (creating the VB now). The shared
+    /// render hook is installed by `HudModule`.
     pub(super) fn init() -> Self {
         // Defensive reset: these thread-locals persist across
         // Init -> Free -> Init in the same process (ClassiCube never
@@ -155,9 +152,7 @@ impl LinesModule {
         invalidate();
 
         let (context_lost, context_recreated) = subscribe();
-        let screen = install();
         Self {
-            _screen: screen,
             _context_lost: context_lost,
             _context_recreated: context_recreated,
         }
@@ -272,68 +267,29 @@ fn draw_segment(vb: GfxResourceID, eye: Vec3, pt_a: Vec3, pt_b: Vec3, dest: Chec
     }
 }
 
-/// Called from `Gui_RenderGui` between `Gfx_Begin2D` and the HUD screen's
-/// render. Switch to 3D state, draw the route ribbons, then restore the 2D
-/// state the HUD (and later screens) expect.
-unsafe extern "C" fn render(_elem: *mut c_void, _delta: f32) {
+/// Route-line draw pass: set the coloured vertex format, read the current eye
+/// position, then stream one ribbon quad per consecutive waypoint pair.
+/// Returns immediately if the VB is unavailable (GPU context lost or not yet
+/// created). Called by the shared HUD render hook in `hud/render.rs` before
+/// the labels pass so lines draw underneath the floating text.
+///
+/// The 3D state (depth/blend/proj/view) is set up by the caller before
+/// invoking this pass, and the 2D-ortho state is restored by the caller
+/// afterwards; this function only sets the vertex format and streams quads.
+pub(super) fn draw_pass() {
+    let Some(vb) = vb_resource_id() else {
+        return;
+    };
+    // SAFETY: Camera.CurrentPos is a plain float read from a C global; safe to
+    // read from the main thread during a render callback.
+    let eye = unsafe { Camera.CurrentPos };
     unsafe {
-        if Gfx.LostContext != 0 {
-            return;
-        }
-        let Some(vb) = vb_resource_id() else {
-            return;
-        };
-
-        // Read the eye position once before the draw loop.
-        let eye = Camera.CurrentPos;
-
-        // 3D state: depth test on (lines are occluded by terrain, like the
-        // floating labels), depth write off, alpha blending on.
-        Gfx_SetDepthTest(1);
-        Gfx_SetDepthWrite(0);
-        Gfx_SetAlphaBlending(1);
-        Gfx_LoadMatrix(MatrixType__MATRIX_PROJ, &raw const Gfx.Projection);
-        Gfx_LoadMatrix(MatrixType__MATRIX_VIEW, &raw const Gfx.View);
         Gfx_SetVertexFormat(VertexFormat__VERTEX_FORMAT_COLOURED);
-
-        WAYPOINTS.with_borrow(|wps| {
-            for w in wps.windows(2) {
-                // Segment i -> i+1: color = destination (w[1]) kind.
-                draw_segment(vb, eye, w[0].0, w[1].0, w[1].1);
-            }
-        });
-
-        // Reconstruct the 2D ortho + identity view + HUD state `Gfx_Begin2D`
-        // had loaded so the chatbox / hotbar / crosshair draw correctly after
-        // us. Must use a backend-correct ortho formula (see
-        // `shared::calc_ortho_matrix`).
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "window dimensions are small positive ints"
-        )]
-        let ortho =
-            shared::calc_ortho_matrix(Game.Width as f32, Game.Height as f32, -100.0, 1000.0);
-        Gfx_LoadMatrix(MatrixType__MATRIX_PROJ, &ortho);
-        Gfx_LoadMatrix(MatrixType__MATRIX_VIEW, &Matrix::IDENTITY);
-        Gfx_SetAlphaBlending(1);
-        Gfx_SetDepthWrite(0);
-        Gfx_SetDepthTest(0);
-        // ClassiCube's convention (matching `EntityNames_Render`) leaves
-        // alpha-test off; otherwise translucent HUD gradients get their
-        // <128-alpha pixels discarded.
-        Gfx_SetAlphaTest(0);
     }
-}
-
-/// Build and register the route-line render hook at `HUD - 3` (one slot
-/// below the label billboards at `HUD - 2`), so the floating text draws on
-/// top of the line passing through it.
-fn install() -> OwnedScreen {
-    let mut screen = OwnedScreen::new();
-    screen.on_render(render);
-    // HUD - 3 (= 7): below labels (HUD - 2 = 8) and chat-bubbles (HUD - 1 =
-    // 9), but above the 3D world pass, so lines are occluded by terrain but
-    // drawn under the text overlays.
-    screen.add(Priority::Custom(Priority::Hud.to_u8() - 3));
-    screen
+    WAYPOINTS.with_borrow(|wps| {
+        for w in wps.windows(2) {
+            // Segment i -> i+1: color = destination (w[1]) kind.
+            draw_segment(vb, eye, w[0].0, w[1].0, w[1].1);
+        }
+    });
 }

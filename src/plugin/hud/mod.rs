@@ -1,6 +1,6 @@
 //! In-world HUD overlay for the loaded track's checkpoint volumes.
 //!
-//! Two layers, both driven off this module's single tick and the same
+//! Three layers, all driven off this module's single tick and the same
 //! map-scoped `splits::visible_aabbs()` snapshot:
 //!
 //! 1. [`boxes`] -- each `Trigger::Aabb` checkpoint as a translucent colored
@@ -10,24 +10,30 @@
 //!    management.
 //! 2. [`labels`] -- each checkpoint's `label` string as white drop-shadowed
 //!    text, drawn as a camera-facing billboard floating above its box. This
-//!    layer *does* touch the GPU: a per-label text texture and an
-//!    `OwnedScreen` render hook, with context-lost/recreated handling.
+//!    layer touches the GPU: per-label text textures and a dynamic VB, with
+//!    context-lost/recreated handling.
+//! 3. [`lines`] -- a colored camera-facing ribbon connecting consecutive
+//!    label anchors, drawn via a `VERTEX_FORMAT_COLOURED` VB.
 //!
-//! Both layers are `Module` children of [`HudModule`], so teardown and the
-//! map-change / reset invalidation flow through the recursive dispatch.
-//! `HudModule` itself only owns the shared tick and the `/client LiveSplit
-//! show [on|off]` toggle (default on, in-memory only -- it resets to on
-//! every plugin Init), and fans the per-tick `visible` snapshot out to both
-//! layers' `reconcile`.
+//! All three layers are `Module` children of [`HudModule`], so teardown and
+//! the map-change / reset invalidation flow through the recursive dispatch.
+//! `HudModule` itself owns the shared tick, the single `OwnedScreen` render
+//! hook (registered at `HUD - 2` by [`render::install`]), and the
+//! `/client LiveSplit show [on|off]` toggle (default on, in-memory only).
+//! The render hook runs the lines pass first, then labels, so route ribbons
+//! draw underneath the floating text. The per-tick `visible` snapshot is
+//! fanned out to all three layers' `reconcile` functions.
 
 mod boxes;
 mod labels;
 mod lines;
+mod render;
 mod shared;
 
 use std::cell::Cell;
 
 use classicube_helpers::tick::TickEventHandler;
+use classicube_sys::OwnedScreen;
 
 use self::{boxes::BoxesModule, labels::LabelsModule, lines::LinesModule};
 use crate::plugin::{editor, module::Module, splits};
@@ -70,6 +76,10 @@ pub struct HudModule {
     // Owned for its Drop side-effect: TickEventHandler::Drop unregisters
     // the reconcile closure from the helpers crate's tick callback list.
     _tick: TickEventHandler,
+    // The single shared render hook (both line and label passes). Declared
+    // last so the tick unsubscribes before the screen unregisters on struct
+    // drop (idempotent either way, but matches the handle-drop convention).
+    _screen: OwnedScreen,
 }
 
 impl HudModule {
@@ -84,11 +94,14 @@ impl HudModule {
         let mut tick = TickEventHandler::new();
         tick.on(|_event| reconcile());
 
+        let screen = render::install();
+
         Self {
             boxes,
             labels,
             lines,
             _tick: tick,
+            _screen: screen,
         }
     }
 }

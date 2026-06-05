@@ -14,7 +14,8 @@
 //!   canvas, `Gfx.LostContext` guard);
 //! - [`context`] -- the shared dynamic vertex buffer + context lost/recreated
 //!   handlers;
-//! - [`render`] -- the `OwnedScreen` render hook and billboard math.
+//! - [`render`] -- the billboard draw pass (invoked by the shared HUD render
+//!   hook in `hud/render.rs`).
 //!
 //! The cache is driven by the same tick + `SHOW` + map-scoped
 //! `splits::visible_aabbs()` data the boxes use: [`reconcile`] rebuilds the
@@ -33,9 +34,10 @@ mod tests;
 use std::cell::{Cell, RefCell};
 
 use classicube_helpers::events::gfx::{ContextLostEventHandler, ContextRecreatedEventHandler};
-use classicube_sys::{Gfx, OwnedScreen, OwnedTexture, Vec3};
+use classicube_sys::{Gfx, OwnedTexture, Vec3};
 use tracing::debug;
 
+pub(super) use self::render::draw_pass;
 use super::{HUD_ID_COUNT, shared};
 use crate::plugin::{
     editor,
@@ -87,14 +89,12 @@ thread_local! {
 
 /// Owns the layer's RAII registration handles. Everything else this layer
 /// needs (the vertex buffer, label textures, font) is reached from the
-/// `extern "C"` render hook or the `'static` context closures, so it lives
-/// in thread-locals these handles' callbacks poke; only the handles
-/// themselves -- which are never touched from inside a callback -- can be
-/// fields. Dropping the module unregisters all three (like
-/// `HudModule._tick`).
+/// `'static` context closures, so it lives in thread-locals these handles'
+/// callbacks poke; only the handles themselves -- which are never touched
+/// from inside a callback -- can be fields. Dropping the module unregisters
+/// both (like `HudModule._tick`). The shared render hook is owned by
+/// `HudModule` and is not a field here.
 pub(super) struct LabelsModule {
-    // The HUD render-hook screen; Drop calls Gui_Remove.
-    _screen: OwnedScreen,
     // GPU context lost/recreated subscriptions; Drop unregisters them. Their
     // closures rebuild/drop the thread-local vertex buffer in `context`.
     _context_lost: ContextLostEventHandler,
@@ -102,8 +102,9 @@ pub(super) struct LabelsModule {
 }
 
 impl LabelsModule {
-    /// Subscribe to the context events (creating the vertex buffer now) and
-    /// register the render hook. The font is built lazily on first label.
+    /// Subscribe to the context events (creating the vertex buffer now). The
+    /// font is built lazily on first label. The shared render hook is
+    /// installed by `HudModule`.
     pub(super) fn init() -> Self {
         // Defensive reset: these thread-locals persist across
         // Init -> Free -> Init in the same process (ClassiCube never
@@ -114,9 +115,7 @@ impl LabelsModule {
         invalidate();
 
         let (context_lost, context_recreated) = context::subscribe();
-        let screen = render::install();
         Self {
-            _screen: screen,
             _context_lost: context_lost,
             _context_recreated: context_recreated,
         }
@@ -126,9 +125,9 @@ impl LabelsModule {
 impl Module for LabelsModule {
     /// Release the thread-local GPU resources the callbacks force out of this
     /// struct: the vertex buffer, the cached label textures, and the font.
-    /// The `_screen` / `_context_*` fields unregister via their own Drop
-    /// right after this returns -- no render or context event fires during
-    /// synchronous teardown, and the render hook no-ops on a dropped buffer.
+    /// The `_context_*` fields unregister via their own Drop right after this
+    /// returns -- no context event fires during synchronous teardown, and the
+    /// shared render hook no-ops per-pass on a dropped buffer.
     fn free(&mut self) {
         context::drop_buffer();
         invalidate();

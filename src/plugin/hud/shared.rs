@@ -52,8 +52,8 @@ pub(super) fn kind_rgb(kind: CheckpointKind) -> (u8, u8, u8) {
 /// `Gfx_CalcOrthoMatrix` itself is not `CC_API` and so isn't exported from
 /// `ClassiCube.dll` on Windows, so we replicate it here.
 ///
-/// Used by both the label-billboard and route-line render hooks to restore the
-/// 2D orthographic state after their 3D drawing pass.
+/// Used by the shared HUD render hook (`hud/render.rs`) to restore the 2D
+/// orthographic state after the 3D drawing passes.
 pub(super) fn calc_ortho_matrix(width: f32, height: f32, z_near: f32, z_far: f32) -> Matrix {
     let mut m = Matrix::IDENTITY;
     m.row1.x = 2.0 / width;
