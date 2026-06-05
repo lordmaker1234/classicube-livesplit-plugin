@@ -1,31 +1,19 @@
 pub mod decode;
 pub mod encode;
 
-use std::{cell::Cell, ptr, slice};
+use std::cell::Cell;
 
-use classicube_sys::{
-    MsgType_MSG_TYPE_NORMAL, Net_Handler, OPCODE__OPCODE_MESSAGE, Protocol, Server,
-    UNSAFE_GetString,
-};
+use classicube_helpers::protocol_hook::ProtocolMessageHook;
 use tracing::debug;
 
 use crate::{
     chat_print,
     plugin::{
-        is_plugin_active,
         module::Module,
         splits,
         track_source::decode::{FrameOutcome, feed_chat_line},
     },
 };
-
-// Semantics: `None` = our hook is not installed; `Some(prior)` =
-// installed, `prior` is what `Protocol.Handlers[OPCODE_MESSAGE]` held
-// before we patched it. See the install/uninstall pair for the
-// chain-survival reasoning.
-thread_local!(
-    static OLD_MESSAGE_HANDLER: Cell<Net_Handler> = const { Cell::new(None) };
-);
 
 // Set on `FrameOutcome::Loaded(_)`; cleared on `on_new_map_loaded`.
 // While set, a second `LS title …` in the same map is refused with a
@@ -38,135 +26,83 @@ thread_local!(
     static LOADED_THIS_MAP: Cell<bool> = const { Cell::new(false) };
 );
 
-extern "C" fn message_handler(data: *mut u8) {
-    if is_plugin_active() {
-        let bytes = unsafe { slice::from_raw_parts(data, 65) };
-        let message_type = bytes[0];
-
-        if message_type == MsgType_MSG_TYPE_NORMAL as u8 {
-            let text = unsafe { UNSAFE_GetString(&bytes[1..]) }.to_string();
-            match feed_chat_line(&text) {
-                FrameOutcome::NotOurs => {
-                    // Fall through to the chain so the line renders.
-                }
-                FrameOutcome::ParseError(msg) => {
-                    chat_print(&format!("&cLiveSplit: malformed track frame: {msg}"));
-                    // Fall through so the raw line still renders.
-                }
-                FrameOutcome::Buffered => {
-                    // Mid-track frame; suppress.
-                    return;
-                }
-                FrameOutcome::Loaded(track) => {
-                    if LOADED_THIS_MAP.get() {
-                        chat_print(
-                            "&eLiveSplit: ignoring re-broadcast; load a new map to allow updates",
-                        );
-                        return;
-                    }
-                    debug!(
-                        name = track.name,
-                        checkpoints = track.checkpoints.len(),
-                        "received chat-protocol track"
-                    );
-                    if splits::load_track(track, "chat") {
-                        LOADED_THIS_MAP.set(true);
-                        return;
-                    }
-                    // load_track returned false: plugin mid-teardown.
-                    // Fall through so the line renders normally rather
-                    // than silently disappearing.
-                }
+/// Trampoline callback for `ProtocolMessageHook`. Receives the text of
+/// `MSG_TYPE_NORMAL` messages (the helper filters + extracts). Returns
+/// `true` to suppress (hide) the line, `false` to let it render.
+fn handle_chat_line(text: &str) -> bool {
+    match feed_chat_line(text) {
+        FrameOutcome::NotOurs => false, // render
+        FrameOutcome::ParseError(msg) => {
+            chat_print(&format!("&cLiveSplit: malformed track frame: {msg}"));
+            // Fall through so the raw line still renders.
+            false
+        }
+        FrameOutcome::Buffered => true, // mid-track frame; suppress
+        FrameOutcome::Loaded(track) => {
+            if LOADED_THIS_MAP.get() {
+                chat_print("&eLiveSplit: ignoring re-broadcast; load a new map to allow updates");
+                return true;
+            }
+            debug!(
+                name = track.name,
+                checkpoints = track.checkpoints.len(),
+                "received chat-protocol track"
+            );
+            if splits::load_track(track, "chat") {
+                LOADED_THIS_MAP.set(true);
+                true // suppress
+            } else {
+                // load_track returned false: plugin mid-teardown.
+                // Fall through so the line renders normally rather than
+                // silently disappearing.
+                false
             }
         }
     }
-
-    OLD_MESSAGE_HANDLER.with(|cell| {
-        if let Some(f) = cell.get() {
-            unsafe {
-                f(data);
-            }
-        }
-    });
-}
-
-fn is_our_handler(handler: Net_Handler) -> bool {
-    handler.is_some_and(|h| ptr::fn_addr_eq(h, message_handler as unsafe extern "C" fn(*mut u8)))
-}
-
-fn install_message_handler() {
-    let current = unsafe { Protocol.Handlers[OPCODE__OPCODE_MESSAGE as usize] };
-
-    // Already at the top of the chain — nothing to do.
-    if is_our_handler(current) {
-        return;
-    }
-
-    // We previously installed ourselves and another plugin has since
-    // stacked its own hook on top. Re-pushing to the top would set
-    //   slot = us, OLD_MESSAGE_HANDLER = other_plugin
-    // while other_plugin's saved "old" still points at us — infinite
-    // recursion through our own handler. Leave the chain alone; we're
-    // still reachable via the existing chain.
-    if OLD_MESSAGE_HANDLER.with(Cell::get).is_some() {
-        return;
-    }
-
-    unsafe {
-        Protocol.Handlers[OPCODE__OPCODE_MESSAGE as usize] = Some(message_handler);
-    }
-    OLD_MESSAGE_HANDLER.with(|cell| cell.set(current));
-}
-
-fn uninstall_message_handler() {
-    let current = unsafe { Protocol.Handlers[OPCODE__OPCODE_MESSAGE as usize] };
-
-    if is_our_handler(current) {
-        // We're still on top — safe to splice ourselves out.
-        let prior = OLD_MESSAGE_HANDLER.with(Cell::take);
-        unsafe {
-            Protocol.Handlers[OPCODE__OPCODE_MESSAGE as usize] = prior;
-        }
-    }
-    // Else: another plugin stacked on top of us. Overwriting the slot
-    // would drop their hook out of the chain. Leave Protocol.Handlers
-    // alone, and keep OLD_MESSAGE_HANDLER populated — our
-    // message_handler is still reachable via the chain and needs OLD
-    // to fall through to the original while is_plugin_active() is
-    // false.
 }
 
 /// Reset the data thread-locals to their initial values: the streaming
 /// decoder back to `Idle` and the re-broadcast latch off. Shared by
 /// `free()` (teardown) and `reset()` (disconnect / local-map-load clean
-/// slate). The message-handler hook slot is a resource, torn down
-/// separately via `uninstall_message_handler()` in `free()`.
+/// slate). The message-handler hook is a resource owned by the
+/// `ProtocolMessageHook` handle in `TrackSourceModule`, torn down via
+/// `Drop` in `free()`.
 fn invalidate() {
     decode::reset_state();
     LOADED_THIS_MAP.set(false);
 }
 
-pub struct TrackSourceModule;
+pub struct TrackSourceModule {
+    hook: Option<ProtocolMessageHook>,
+}
 
 impl TrackSourceModule {
     pub fn init() -> Self {
-        // Singleplayer has no Protocol layer (no server, no incoming
-        // OPCODE_MESSAGE packets). Tracks come from servers, so we
-        // skip the install entirely in SP.
-        if unsafe { Server.IsSinglePlayer } == 0 {
-            install_message_handler();
+        // install() returns None in singleplayer (no Protocol layer), so
+        // the SP gate lives inside the helper -- no Server check here.
+        Self {
+            hook: ProtocolMessageHook::install(handle_chat_line),
         }
-        Self
     }
 }
 
 impl Module for TrackSourceModule {
     fn free(&mut self) {
-        uninstall_message_handler();
+        // Drop uninstalls (if we're on top of the chain) and clears the
+        // callback so a future reload's install() doesn't hit the
+        // double-install assert.
+        self.hook = None;
         invalidate();
     }
 
     fn reset(&mut self) {
+        // ClassiCube wipes Protocol.Handlers on every Game_Reset /
+        // disconnect (Protocol.OnReset: Mem_Set + restore default).
+        // reinstall() re-hooks after the wipe; it's idempotent (no-op if
+        // we're already on top) and a no-op in singleplayer.
+        if let Some(hook) = &self.hook {
+            hook.reinstall();
+        }
         invalidate();
     }
 
