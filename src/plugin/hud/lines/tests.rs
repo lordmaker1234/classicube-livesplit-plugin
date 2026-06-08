@@ -104,7 +104,7 @@ fn fewer_than_two_waypoints_yields_no_segments() {
     assert_eq!(wps.windows(2).count(), 0);
 
     // 1 waypoint
-    let wps = vec![(Vec3::create(0.0, 0.0, 0.0), CheckpointKind::Start)];
+    let wps = [(Vec3::create(0.0, 0.0, 0.0), CheckpointKind::Start)];
     assert_eq!(wps.windows(2).count(), 0);
 }
 
@@ -113,7 +113,7 @@ fn segment_uses_destination_kind() {
     // Three waypoints -> two segments.
     // Segment 0->1 uses kind of waypoint 1 (Split).
     // Segment 1->2 uses kind of waypoint 2 (End).
-    let wps = vec![
+    let wps = [
         (Vec3::create(0.0, 0.0, 0.0), CheckpointKind::Start),
         (Vec3::create(1.0, 0.0, 0.0), CheckpointKind::Split),
         (Vec3::create(2.0, 0.0, 0.0), CheckpointKind::End),
@@ -127,7 +127,7 @@ fn segment_uses_destination_kind() {
 
 #[test]
 fn two_waypoints_give_one_segment() {
-    let wps = vec![
+    let wps = [
         (Vec3::create(0.0, 0.0, 0.0), CheckpointKind::Start),
         (Vec3::create(5.0, 0.0, 0.0), CheckpointKind::End),
     ];

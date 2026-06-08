@@ -3,7 +3,7 @@ pub mod encode;
 
 use std::cell::Cell;
 
-use classicube_helpers::protocol_hook::ProtocolMessageHook;
+use classicube_helpers::chat::ProtocolMessageHook;
 use tracing::debug;
 
 use crate::{
