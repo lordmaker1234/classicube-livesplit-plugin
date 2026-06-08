@@ -1,10 +1,14 @@
 //! Route-line overlay connecting the checkpoint label anchors in track order.
 //!
+//! The ribbon is an **authoring aid** shown only while edit mode is on
+//! (`/client LiveSplit edit on`). During normal play the ribbon is hidden so
+//! it doesn't clutter the view; boxes and labels remain visible regardless.
+//!
 //! Each tick [`reconcile`] derives an ordered list of `(anchor, kind)`
 //! waypoints from the same map-scoped `splits::visible_aabbs()` snapshot the
-//! boxes and labels layers use. The render hook then draws a colored
-//! camera-facing ribbon quad between each consecutive pair of waypoints so the
-//! player can follow the route to the next checkpoint.
+//! boxes and labels layers use (empty when edit mode is off). The render hook
+//! then draws a colored camera-facing ribbon quad between each consecutive pair
+//! of waypoints so the author can follow the route while placing checkpoints.
 //!
 //! **Rendering** shares the single `OwnedScreen` hook owned by `HudModule`
 //! (in `hud/render.rs`). That hook invokes [`draw_pass`] first (so line
@@ -45,6 +49,7 @@ use tracing::debug;
 
 use super::{HUD_ID_COUNT, shared};
 use crate::plugin::{
+    editor,
     module::Module,
     splits::geometry::{Aabb, CheckpointKind},
 };
@@ -184,7 +189,15 @@ pub(crate) fn derive_waypoints(
 /// Update the cached waypoint list to match the current map-scoped visible
 /// set. No-op when the set is unchanged. Called once per tick by the HUD
 /// coordinator alongside `boxes::reconcile` and `labels::reconcile`.
+///
+/// Outside edit mode the visible set is treated as empty so the render hook
+/// draws no ribbon (route lines are an authoring aid only). The `LAST_SET`
+/// diff key goes empty<->populated across the edit-mode toggle, so the toggle
+/// itself triggers the rebuild -- no separate edit-mode flag is needed.
 pub(super) fn reconcile(visible: &[(usize, CheckpointKind, Aabb, String, bool)]) {
+    // Route lines are an authoring aid -- only drawn while editing.
+    let visible: &[_] = if editor::is_enabled() { visible } else { &[] };
+
     let want: Vec<(CheckpointKind, Aabb, bool)> = visible
         .iter()
         .take(HUD_ID_COUNT)
