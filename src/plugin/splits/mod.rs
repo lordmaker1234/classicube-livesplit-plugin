@@ -536,10 +536,11 @@ pub fn with_timer_reset<R>(reason: &str, mutate: impl FnOnce() -> R) -> R {
 /// outcome. `None` if the plugin is mid-teardown or the mutation failed.
 ///
 /// A `None` `target` (bare `edit add`) resolves to the end of the
-/// player's current map section via `geometry::append_index_for_section`
-/// (just before that section's terminating `MapLoaded`, or before `End` on
-/// the last/only section). An explicit `Some(i)` is passed through verbatim
-/// for `add_checkpoint` to clamp.
+/// player's current map section via `geometry::append_index_for_section`:
+/// just before that section's terminating `MapLoaded` (or before a `Pause`
+/// sitting directly before it), or **after `End`** on the last/only section
+/// (so the new checkpoint becomes the new finish). An explicit `Some(i)` is
+/// passed through verbatim for `add_checkpoint` to clamp.
 pub fn editor_add(aabb: Aabb, label: String, target: Option<usize>) -> Option<usize> {
     // Resolve the live world outside the borrow: `map::current_map()` reads
     // the engine `World` static + tab-list, never `STATE` (same reason

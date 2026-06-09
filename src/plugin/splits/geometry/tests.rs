@@ -922,9 +922,10 @@ fn aabbs_on_map_marks_next_index_respecting_scope() {
 // ---- append_index_for_section (bare `edit add` default target) ----
 
 #[test]
-fn append_index_single_map_appends_before_end() {
-    // No MapLoaded: a bare add always lands just before End (n - 1),
-    // the prior behavior.
+fn append_index_single_map_appends_after_end() {
+    // No MapLoaded: the matched section is the only (last) section, so a
+    // bare add lands at n = 3 (after End). re_derive_kinds promotes the new
+    // checkpoint to End and demotes the old End to Split.
     let track = Track {
         name: "T".into(),
         checkpoints: vec![
@@ -935,7 +936,7 @@ fn append_index_single_map_appends_before_end() {
     };
     assert_eq!(
         append_index_for_section(&track.checkpoints, Some("home"), Some("home")),
-        2,
+        3,
     );
 }
 
@@ -961,9 +962,9 @@ fn append_index_first_section_inserts_before_its_maploaded() {
 }
 
 #[test]
-fn append_index_last_section_appends_before_end() {
+fn append_index_last_section_appends_after_end() {
     // Same track; standing on B (the last section, no following MapLoaded)
-    // appends before End at n - 1 = 4.
+    // appends after End at n = 5 so the new checkpoint becomes the finish.
     let track = Track {
         name: "T".into(),
         checkpoints: vec![
@@ -976,7 +977,7 @@ fn append_index_last_section_appends_before_end() {
     };
     assert_eq!(
         append_index_for_section(&track.checkpoints, Some("A"), Some("B")),
-        4,
+        5,
     );
 }
 
@@ -1025,6 +1026,53 @@ fn append_index_revisited_map_targets_first_section() {
         2,
         "first-match: appends to the earliest A section",
     );
+}
+
+#[test]
+fn append_index_pause_before_map_inserts_before_pause() {
+    // A section ending in Pause -> MapLoaded: bare add should land BEFORE the
+    // Pause so the Pause stays adjacent to the transition.
+    // [Start(A), Split(A), Pause(A), MapLoaded(B), Split(B), End]
+    //   0         1         2         3              4         5
+    // Standing on A -> returns 2 (before Pause), not 3 (before MapLoaded).
+    let track = Track {
+        name: "T".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)), // 0
+            cp(CheckpointKind::Split, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // 1
+            cp(CheckpointKind::Pause, (14.0, 0.0, 0.0), (16.0, 4.0, 2.0)), // 2
+            cp_map(CheckpointKind::Split, "B"),                          // 3
+            cp(CheckpointKind::Resume, (10.0, 0.0, 0.0), (12.0, 4.0, 2.0)), // 4
+            cp(CheckpointKind::End, (20.0, 0.0, 0.0), (22.0, 4.0, 2.0)), // 5
+        ],
+    };
+    assert_eq!(
+        append_index_for_section(&track.checkpoints, Some("A"), Some("A")),
+        2,
+        "inserts before Pause, not before MapLoaded",
+    );
+}
+
+#[test]
+fn add_checkpoint_at_n_becomes_new_end_and_demotes_old_end() {
+    // Some(n) appends after End: re_derive_kinds promotes the new checkpoint
+    // to End and demotes the old End (now at n - 1) to Split.
+    use CheckpointKind::{End, Split, Start};
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string())); // [Start, Split, Split, End], n = 4
+    let new_box = aabb((30.0, 0.0, 0.0), (32.0, 4.0, 2.0));
+    let idx = state
+        .add_checkpoint(new_box, "finish".into(), Some(4))
+        .unwrap();
+    assert_eq!(idx, 4, "insert at n appends after old End");
+    assert_eq!(kinds(&state), vec![Start, Split, Split, Split, End]);
+    let t = state.track.as_ref().unwrap();
+    assert_eq!(t.checkpoints[4].trigger, Trigger::Aabb(new_box));
+    assert_eq!(t.checkpoints[4].label, "finish");
+    // Latches reallocated, run re-armed.
+    assert_eq!(state.next_index, 0);
+    assert_eq!(state.fired, vec![false; 5]);
+    assert_eq!(state.last_inside, vec![false; 5]);
 }
 
 // ---- observe_map (tick-driven map-change detection) ----
@@ -1350,16 +1398,19 @@ fn add_checkpoint_appends_before_end_and_rederives_boundaries() {
 }
 
 #[test]
-fn add_checkpoint_target_clamps_to_upper_boundary() {
-    // A large target clamps to n - 1 (just before End), never past it.
+fn add_checkpoint_large_target_appends_after_end() {
+    // A large target clamps to n = 4 (after End): the new checkpoint becomes
+    // End and the old End (idx 3) is demoted to Split -- symmetric with
+    // Some(0) which inserts before Start and re_derive_kinds promotes it.
+    use CheckpointKind::{End, Split, Start};
     let mut state = SplitsState::default();
-    state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4
-    let idx = state
-        .add_checkpoint(aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0)), "x".into(), Some(99))
-        .unwrap();
-    assert_eq!(idx, 3);
+    state.load(linear_track(), Some(TEST_MAP.to_string())); // n = 4: Start Split Split End
+    let new_box = aabb((5.0, 0.0, 0.0), (6.0, 1.0, 1.0));
+    let idx = state.add_checkpoint(new_box, "x".into(), Some(99)).unwrap();
+    assert_eq!(idx, 4, "clamped to n = 4, appended after old End");
+    assert_eq!(kinds(&state), vec![Start, Split, Split, Split, End]);
     let t = state.track.as_ref().unwrap();
-    assert_eq!(t.checkpoints[4].kind, CheckpointKind::End);
+    assert_eq!(t.checkpoints[4].trigger, Trigger::Aabb(new_box));
 }
 
 #[test]

@@ -441,14 +441,15 @@ impl SplitsState {
     /// Add a new `Split`/AABB checkpoint and return the index it
     /// landed at. `target` is `None` to append (just before `End`) or
     /// `Some(i)` to insert at a specific slot. On a populated track
-    /// (>= 2 checkpoints) the insert position is clamped to
-    /// `[0, n - 1]`: the upper bound keeps `End` as the last
-    /// checkpoint; `Some(0)` inserts before the current `Start`,
-    /// which `re_derive_kinds` then promotes to the new `Start` (the
-    /// displaced former `Start` becomes a middle `Split`). Bootstrapping
-    /// an empty/one-checkpoint track ignores `target` -- the first
-    /// placement becomes index 0 (later re-derived to `Start`), the
-    /// second appends as index 1 (re-derived to `End`). After the
+    /// (>= 2 checkpoints) the insert position is clamped to `[0, n]`:
+    /// `Some(0)` inserts before `Start` and `re_derive_kinds` promotes
+    /// the new checkpoint to `Start` (the old `Start` becomes a middle
+    /// `Split`); `Some(i >= n)` appends after `End` and `re_derive_kinds`
+    /// promotes the new checkpoint to `End` (the old `End` becomes a
+    /// middle `Split`) -- the symmetric mirror of the `Some(0)` case.
+    /// Bootstrapping an empty/one-checkpoint track ignores `target` --
+    /// the first placement becomes index 0 (later re-derived to `Start`),
+    /// the second appends as index 1 (re-derived to `End`). After the
     /// structural change the boundary kinds are re-derived and the
     /// per-checkpoint latches reallocated (the run re-arms to index 0).
     /// `Err` if no track is loaded.
@@ -469,9 +470,10 @@ impl SplitsState {
             } else {
                 match target {
                     None => n - 1,
-                    // Upper bound: End must stay last. Lower bound removed so
-                    // Some(0) inserts before Start; re_derive_kinds promotes it.
-                    Some(i) => i.min(n - 1),
+                    // Clamp to [0, n]: Some(0) inserts before Start (re_derive_kinds
+                    // promotes it); Some(i >= n) appends after End (re_derive_kinds
+                    // promotes it) -- symmetric with the Start case.
+                    Some(i) => i.min(n),
                 }
             };
             track.checkpoints.insert(
@@ -957,14 +959,25 @@ pub fn aabbs_on_map(
     out
 }
 
-/// Index at which a bare `edit add` (no explicit target) should insert:
-/// the end of the section whose map name matches `world` -- just before
-/// that section's terminating `Trigger::MapLoaded` -- so a new checkpoint
-/// lands at the end of the map the player is currently standing on. Falls
-/// back to `n - 1` (append before `End`, the prior behavior) when the
-/// matched section is the last one (runs straight to `End`) or `world`
-/// matches no section. Mirrors the implicit-scope walk in [`aabbs_on_map`]:
-/// seed `current_map` from `starting_map`, advance on each `MapLoaded`.
+/// Index at which a bare `edit add` (no explicit target) should insert,
+/// following three rules in priority order:
+///
+/// 1. **Last section** (`world` matches the map `End` belongs to): return
+///    `n` so the new checkpoint appends *after* `End`. `re_derive_kinds`
+///    then promotes the new checkpoint to `End` and demotes the old `End`
+///    to `Split` -- the symmetric mirror of `Some(0)` -> new `Start`.
+/// 2. **Non-last section ending in `Pause`**: a `Pause` AABB right before
+///    the section's terminating `MapLoaded` is the cross-map pause-window
+///    marker. Insert before the `Pause` (return `i - 1`) so the `Pause`
+///    stays adjacent to the transition. Use an explicit `add <map_index>`
+///    to land between the `Pause` and the `Map` instead.
+/// 3. **Non-last section (general)**: return the `MapLoaded` index `i`
+///    (just before the section boundary), unchanged from the prior behavior.
+///
+/// Falls back to `n.saturating_sub(1)` (before `End`) when `world` matches
+/// no section (off-route or `None`). Mirrors the implicit-scope walk in
+/// [`aabbs_on_map`]: seed `current_map` from `starting_map`, advance on
+/// each `MapLoaded`.
 ///
 /// First-match on a route that revisits a map name (`A -> B -> A`): the
 /// author uses an explicit `add <i>` to target a later instance, since
@@ -984,14 +997,23 @@ pub(crate) fn append_index_for_section(
     for (i, cp) in checkpoints.iter().enumerate() {
         if let Trigger::MapLoaded(name) = &cp.trigger {
             if in_target {
-                // This MapLoaded closes the matched section: insert before it.
+                // End of the matched (non-last) section: insert before this
+                // MapLoaded. A Pause directly before the Map is the cross-map
+                // pause-window marker -- insert before it so it stays adjacent
+                // to the transition. Explicit `edit add <this index>` is the
+                // override to land between the Pause and the Map.
+                if i > 0 && checkpoints[i - 1].kind == CheckpointKind::Pause {
+                    return i - 1;
+                }
                 return i;
             }
             in_target = world == Some(name.as_str());
         }
     }
-    // Matched section is last, or no match: append before End.
-    n.saturating_sub(1)
+    // Matched last section (End belongs to this map): append AFTER End so
+    // the new checkpoint becomes the finish (re_derive_kinds demotes the old
+    // End). No match / unknown world: keep the prior before-End behavior.
+    if in_target { n } else { n.saturating_sub(1) }
 }
 
 /// Edge-trigger wrapper over [`step_on_map_loaded`] for tick-driven
