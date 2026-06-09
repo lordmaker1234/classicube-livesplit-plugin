@@ -413,6 +413,17 @@ pub fn run_in_progress() -> bool {
     with_state(|s| s.next_index > 0 && s.next_index < s.fired.len()).unwrap_or(false)
 }
 
+/// Has the run cursor advanced past Start -- i.e. a run is mid-flight
+/// *or* already finished (`next_index > 0`)? Broader than
+/// [`run_in_progress`], which excludes a finished run. Used by
+/// [`with_timer_reset`] so loading a new track / editing after
+/// *finishing* a run still resets connected timers (the built-in overlay
+/// and any external LiveSplit), instead of leaving the completed run on
+/// screen until the next Start. `false` when mid-teardown.
+fn run_begun() -> bool {
+    with_state(|s| s.next_index > 0).unwrap_or(false)
+}
+
 /// Whether `map_name` belongs to the currently-loaded track's map set
 /// (`starting_map` or any `Trigger::MapLoaded` target). `false` when no
 /// track is loaded or mid-teardown. Used by the autoload tick to avoid
@@ -473,7 +484,7 @@ pub fn on_timer_event(ev: TimerEvent) {
 
 /// Run a mutation that may re-arm the run cursor (a fresh `load_track`,
 /// or an editor edit), then keep a connected timer in sync: if the
-/// mutation aborted an in-progress run, reset the timer too.
+/// mutation aborted or replaced a run that had begun, reset the timer too.
 ///
 /// `reason` is appended to the chat notification: non-empty produces
 /// `"run reset {reason}"`, empty produces `"run reset"`.
@@ -482,14 +493,18 @@ pub fn on_timer_event(ev: TimerEvent) {
 /// can't be split or mis-ordered. Detection is purely state-based: every
 /// re-arming mutator zeroes the cursor on success and leaves it untouched
 /// on failure (each bails before mutating, and `move_checkpoint` rolls
-/// back), so "was running, now isn't" == "a live run got aborted" --
-/// failures and no-ops fall through without a reset. Silent + no-op when
-/// nothing was running or no timer is attached (the plugin is usable
-/// offline). Returns the mutation's own result unchanged.
+/// back), so "had begun, now re-armed" == "a run got aborted or replaced"
+/// -- failures and no-ops fall through without a reset. Keyed on
+/// [`run_begun`] (`next_index > 0`), **not** [`run_in_progress`], so a
+/// *finished* run is reset too: loading a new track after completing a run
+/// clears the old splits off connected timers instead of stranding them
+/// there until the next Start. Silent + no-op when nothing had begun or no
+/// timer is attached (the plugin is usable offline). Returns the
+/// mutation's own result unchanged.
 pub fn with_timer_reset<R>(reason: &str, mutate: impl FnOnce() -> R) -> R {
-    let was_in_progress = run_in_progress();
+    let was_begun = run_begun();
     let out = mutate();
-    if was_in_progress && !run_in_progress() && livesplit::any_connected() {
+    if was_begun && !run_begun() && livesplit::any_connected() {
         livesplit::send(Command::Reset { save_attempt: None });
         if reason.is_empty() {
             chat_print("&eLiveSplit: run reset");
