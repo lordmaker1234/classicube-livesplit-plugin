@@ -17,7 +17,7 @@ use tracing::debug;
 
 use super::{TIMER_STATE, context, format::format_time, texture};
 use crate::plugin::{
-    livesplit,
+    editor, livesplit,
     splits::{
         self,
         geometry::{CheckpointKind, kind_color_code},
@@ -85,11 +85,14 @@ unsafe extern "C" fn render(_elem: *mut c_void, _delta: f32) {
         let Some(vb) = context::vb_resource_id() else {
             return;
         };
-        let visible = match super::SHOW_MODE.get() {
-            super::ShowMode::Auto => !livesplit::external_connected(),
-            super::ShowMode::On => true,
-            super::ShowMode::Off => false,
-        };
+        // Edit mode hides the overlay entirely: authoring isn't a timed
+        // attempt, and the HUD shows editor aids in the same screen region.
+        let visible = !editor::is_enabled()
+            && match super::SHOW_MODE.get() {
+                super::ShowMode::Auto => !livesplit::external_connected(),
+                super::ShowMode::On => true,
+                super::ShowMode::Off => false,
+            };
         if !visible {
             return;
         }
