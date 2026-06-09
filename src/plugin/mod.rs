@@ -9,6 +9,7 @@ pub mod map;
 pub mod module;
 pub mod pause_triggers;
 pub mod splits;
+pub mod timer;
 pub mod track_source;
 
 use std::cell::RefCell;
@@ -17,7 +18,8 @@ use crate::plugin::{
     async_manager::AsyncManagerModule, command::CommandModule, editor::EditorModule,
     hud::HudModule, livesplit::LiveSplitModule, logger::LoggerModule,
     lss_storage::LssStorageModule, map::MapModule, module::Module,
-    pause_triggers::PauseTriggersModule, splits::SplitsModule, track_source::TrackSourceModule,
+    pause_triggers::PauseTriggersModule, splits::SplitsModule, timer::TimerModule,
+    track_source::TrackSourceModule,
 };
 
 thread_local!(
@@ -35,6 +37,7 @@ struct MainModule {
     lss_storage: LssStorageModule,
     hud: HudModule,
     editor: EditorModule,
+    timer: TimerModule,
     command: CommandModule,
 }
 
@@ -50,6 +53,9 @@ impl MainModule {
         let lss_storage = LssStorageModule::init();
         let hud = HudModule::init();
         let editor = EditorModule::init();
+        // After splits/hud/editor (reads splits accessors, draws over the HUD)
+        // and before command (the `timer` chat arm dispatches into timer::).
+        let timer = TimerModule::init();
         let command = CommandModule::init();
 
         Self {
@@ -63,6 +69,7 @@ impl MainModule {
             lss_storage,
             hud,
             editor,
+            timer,
             command,
         }
     }
@@ -116,6 +123,11 @@ impl Module for MainModule {
         // `editor` (uninstalling the `Server.SendBlock` hook), then
         // `hud`/`splits`. Its `on_new_map_loaded` re-asserts the hook,
         // ordered after splits/hud have settled the map change.
+        // `timer` sits after `editor` (reads splits accessors + draws over
+        // HUD, so splits/hud/editor must be live) and before `command` (the
+        // `timer` chat arm dispatches into timer::). Reverse-dispatch tears
+        // `command` first, then `timer` (clears the overlay + GPU resources),
+        // then `editor`/`hud`/`splits`.
         vec![
             &mut self.logger,
             &mut self.async_manager,
@@ -127,6 +139,7 @@ impl Module for MainModule {
             &mut self.lss_storage,
             &mut self.hud,
             &mut self.editor,
+            &mut self.timer,
             &mut self.command,
         ]
     }

@@ -13,6 +13,7 @@ use crate::{
         module::Module,
         pause_triggers,
         splits::{self, geometry::CheckpointKind},
+        timer,
         track_source::encode::encode_for_chat,
     },
 };
@@ -49,6 +50,7 @@ fn print_usage() {
     chat_print("&e  /client LiveSplit load [filename]   (newest, or a specific .lss)");
     chat_print("&e  /client LiveSplit open               (reveal the loaded track file)");
     chat_print("&e  /client LiveSplit show [on|off]    (toggle checkpoint HUD)");
+    chat_print("&e  /client LiveSplit timer [on|off]   (toggle built-in timer overlay)");
     chat_print(
         "&e  /client LiveSplit edit              (track authoring; run 'edit' for sub-commands)",
     );
@@ -160,6 +162,12 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
                     livesplit::CLIENT_PIPE_NAME
                 ));
             }
+            let builtin = if livesplit::timer_connected() {
+                "&aactive"
+            } else {
+                "&7inactive"
+            };
+            chat_print(&format!("&e  built-in timer: {builtin}"));
         }
         ["start"] => {
             if require_connected() {
@@ -244,6 +252,22 @@ extern "C" fn c_callback(args: *const cc_string, args_count: c_int) {
         ["show", "off"] => {
             hud::set_show(false);
             chat_print("&aLiveSplit: checkpoint HUD off");
+        }
+        ["timer"] => {
+            let on = timer::toggle_show();
+            chat_print(if on {
+                "&aLiveSplit: timer overlay on"
+            } else {
+                "&aLiveSplit: timer overlay off"
+            });
+        }
+        ["timer", "on"] => {
+            timer::set_show(true);
+            chat_print("&aLiveSplit: timer overlay on");
+        }
+        ["timer", "off"] => {
+            timer::set_show(false);
+            chat_print("&aLiveSplit: timer overlay off");
         }
         // Editor arms -- local plugin/file state, so none gate on
         // `require_connected()` (the editor is usable offline; a
@@ -368,7 +392,7 @@ impl CommandModule {
                     "&a/client LiveSplit status | start | split | splitorstart",
                     "&a/client LiveSplit pause | resume | reset | undosplit | skipsplit",
                     "&a/client LiveSplit loadtest | list | clear | save | load | open",
-                    "&a/client LiveSplit show [on|off] | edit | mb | nas",
+                    "&a/client LiveSplit show [on|off] | timer [on|off] | edit | mb | nas",
                     "&a(no args = full usage; 'edit' alone = editor sub-commands)",
                 ],
             );
