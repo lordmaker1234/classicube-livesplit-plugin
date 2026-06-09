@@ -159,7 +159,12 @@ impl TimerState {
         self.split_rows = track
             .as_ref()
             .map(|t| {
-                t.checkpoints[1..]
+                // `get(1..)` (not `[1..]`) so a 0-checkpoint track -- an empty
+                // `edit new` track that a manual `/client LiveSplit start`
+                // raced -- yields no rows instead of panicking across the C ABI.
+                t.checkpoints
+                    .get(1..)
+                    .unwrap_or_default()
                     .iter()
                     .map(|cp| SplitRow {
                         kind: cp.kind,

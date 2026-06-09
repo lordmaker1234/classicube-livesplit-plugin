@@ -351,6 +351,26 @@ pub fn current_track() -> Option<Track> {
     with_state(|s| s.track.clone()).flatten()
 }
 
+/// Kind + label of every non-Start checkpoint in the loaded track, in
+/// checkpoint order -- i.e. the rows that will each become a
+/// `Command::Split`. Mirrors what the built-in timer's `do_start`
+/// populates `split_rows` from, so the overlay can show the same list
+/// (with blank times) before a run begins. Empty when no track is loaded,
+/// the track has only a Start (or is empty), or the plugin is mid-teardown.
+pub fn checkpoint_rows() -> Vec<(CheckpointKind, String)> {
+    with_state(|s| {
+        s.track.as_ref().map_or_else(Vec::new, |t| {
+            t.checkpoints
+                .get(1..)
+                .unwrap_or_default()
+                .iter()
+                .map(|cp| (cp.kind, cp.label.clone()))
+                .collect()
+        })
+    })
+    .unwrap_or_default()
+}
+
 /// AABB checkpoints visible on the player's current map, paired with
 /// their kind, label, and an "is the next eligible checkpoint" flag, in
 /// checkpoint order -- the boxes the HUD should draw, the text it floats

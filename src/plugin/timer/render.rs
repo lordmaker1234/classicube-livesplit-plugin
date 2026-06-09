@@ -17,7 +17,10 @@ use tracing::debug;
 
 use super::{TIMER_STATE, context, format::format_time, texture};
 use crate::plugin::{
-    splits::geometry::{CheckpointKind, kind_color_code},
+    splits::{
+        self,
+        geometry::{CheckpointKind, kind_color_code},
+    },
     timer::state::Phase,
 };
 
@@ -139,11 +142,25 @@ fn draw_overlay(vb: GfxResourceID) {
         });
 
         // --- Split rows ---
-        let split_key: Vec<(CheckpointKind, String, Option<String>)> = state
-            .split_rows
-            .iter()
-            .map(|row| (row.kind, row.label.clone(), row.time.map(format_time)))
-            .collect();
+        // Pre-run (NotRunning, or after a Reset) the state's `split_rows` are
+        // empty -- they're only populated at `Command::Start`. Derive the row
+        // list from the loaded track instead, so the split list is visible on
+        // track load with blank times. Once a run begins, the state's rows are
+        // the source of truth (they carry the captured per-split times) and
+        // also reflect live editor edits made before Start.
+        let split_key: Vec<(CheckpointKind, String, Option<String>)> =
+            if state.split_rows.is_empty() {
+                splits::checkpoint_rows()
+                    .into_iter()
+                    .map(|(kind, label)| (kind, label, None))
+                    .collect()
+            } else {
+                state
+                    .split_rows
+                    .iter()
+                    .map(|row| (row.kind, row.label.clone(), row.time.map(format_time)))
+                    .collect()
+            };
 
         let needs_rebuild =
             LAST_SPLIT_KEY.with_borrow(|last| last.as_slice() != split_key.as_slice());
