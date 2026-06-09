@@ -85,9 +85,11 @@ unsafe extern "C" fn render(_elem: *mut c_void, _delta: f32) {
         let Some(vb) = context::vb_resource_id() else {
             return;
         };
+        // No track loaded: nothing to time, nothing to show.
         // Edit mode hides the overlay entirely: authoring isn't a timed
         // attempt, and the HUD shows editor aids in the same screen region.
-        let visible = !editor::is_enabled()
+        let visible = splits::track_loaded()
+            && !editor::is_enabled()
             && match super::SHOW_MODE.get() {
                 super::ShowMode::Auto => !livesplit::external_connected(),
                 super::ShowMode::On => true,
