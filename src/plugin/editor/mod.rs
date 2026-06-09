@@ -1,11 +1,13 @@
 //! In-world track editor: place / remove / relabel checkpoints with chat
 //! commands and block clicks.
 //!
-//! `/client LiveSplit edit on` enables edit mode and installs a
-//! `Server.SendBlock` override ([`hook`]). While armed (via
+//! `/client LiveSplit edit on` enables edit mode. While armed (via
 //! `edit add`), the next two block clicks are consumed as the two
 //! corners of a checkpoint AABB instead of building/breaking world blocks
 //! -- the clicked block is reverted locally and never sent to the server.
+//! The `Server.SendBlock` hook ([`hook`]) and build-permission override
+//! ([`permissions`]) are installed only during an active armed capture and
+//! restored immediately after the second click (or on cancel / map change).
 //! The committed checkpoint flows through `splits::editor_add`, the
 //! same `Track` mutation path the chat/`.lss` sources feed into, and
 //! becomes visible through the existing `/client LiveSplit show` HUD on
@@ -18,6 +20,7 @@
 //! still deferred to the track-editor HUD work.
 
 pub mod hook;
+mod permissions;
 mod preview;
 
 use std::{cell::RefCell, os::raw::c_int};
@@ -26,7 +29,7 @@ use classicube_helpers::tick::TickEventHandler;
 use classicube_sys::{BlockID, Game_UpdateBlock, IVec3};
 use tracing::debug;
 
-use self::{hook::HookModule, preview::PreviewModule};
+use self::{hook::HookModule, permissions::PermissionsModule, preview::PreviewModule};
 use crate::{
     chat_print,
     plugin::{
@@ -65,8 +68,8 @@ struct Pending {
 }
 
 struct EditorState {
-    /// Edit mode on/off (`edit on` / `edit off`). When off, the
-    /// `SendBlock` hook (if still installed) passes every click through.
+    /// Edit mode on/off (`edit on` / `edit off`). Must be on before a
+    /// placement can be armed; turning it off disarms any half-armed one.
     enabled: bool,
     /// `Some` once `edit add` arms a placement; `None` otherwise.
     pending: Option<Pending>,
@@ -91,8 +94,8 @@ pub fn is_enabled() -> bool {
 /// Reset the `EDITOR_STATE` thread-local to its initial values
 /// (`enabled = false`, no pending placement). Shared by `free()` (teardown)
 /// and `reset()` (disconnect / local-map-load clean slate). Does NOT touch
-/// the `SendBlock` hook (a resource, managed by `hook::install` /
-/// `uninstall`) or the preview selection (cleared separately via `preview`).
+/// the `SendBlock` hook or permissions override (resources managed by
+/// `hook::install`/`uninstall` and `permissions::apply`/`restore`).
 fn reset_state() {
     EDITOR_STATE.with_borrow_mut(|s| {
         s.enabled = false;
@@ -100,18 +103,49 @@ fn reset_state() {
     });
 }
 
-/// `edit on` / `edit off`. Installs the `SendBlock` hook on enable and
-/// uninstalls it on disable; also clears any half-armed placement when
-/// turning off.
-pub fn set_enabled(on: bool) {
-    EDITOR_STATE.with_borrow_mut(|s| {
-        s.enabled = on;
-        if !on {
-            s.pending = None;
+/// Arm a two-click capture for `op`: the next two block clicks become a
+/// checkpoint's corners. Installs the `SendBlock` hook and forces build
+/// permissions for the duration of the capture (both torn down by
+/// [`disarm`]). Requires edit mode on; prints a hint and returns `false`
+/// otherwise. The single entry point that sets `pending` -- callers pair
+/// it with their own "armed" chat line.
+fn arm(op: PendingOp) -> bool {
+    let armed = EDITOR_STATE.with_borrow_mut(|s| {
+        if !s.enabled {
+            return false;
         }
+        s.pending = Some(Pending { op, corner_a: None });
+        true
     });
-    if on {
+    if armed {
+        permissions::apply();
         hook::install();
+    } else {
+        chat_print("&cLiveSplit: enable edit mode first (/client LiveSplit edit on)");
+    }
+    armed
+}
+
+/// Drop any half-armed placement, uninstalling the `SendBlock` hook and
+/// restoring block permissions if a capture was in progress. Returns
+/// whether one was armed. The single exit point for `pending` -- every
+/// path that abandons a placement (commit, `edit cancel`, `edit off`,
+/// map change, `new` / `clear`) funnels through here, so the hook +
+/// permission resources can never outlive the `pending` they're tied to.
+/// Idempotent: a no-op (returns `false`) when nothing is armed.
+fn disarm() -> bool {
+    let was_armed = EDITOR_STATE.with_borrow_mut(|s| s.pending.take().is_some());
+    if was_armed {
+        hook::uninstall();
+        permissions::restore();
+    }
+    was_armed
+}
+
+/// `edit on` / `edit off`. Turning off disarms any in-progress placement.
+pub fn set_enabled(on: bool) {
+    EDITOR_STATE.with_borrow_mut(|s| s.enabled = on);
+    if on {
         chat_print("&aLiveSplit: edit mode ON");
         chat_print("&e  /client LiveSplit edit add, then click two blocks for a checkpoint");
         // Authoring isn't a timed attempt: abandon any in-progress run so
@@ -120,7 +154,7 @@ pub fn set_enabled(on: bool) {
         // no-op when nothing was running / no timer is attached.
         splits::with_timer_reset("to allow edit", splits::reset_run);
     } else {
-        hook::uninstall();
+        disarm();
         chat_print("&aLiveSplit: edit mode OFF");
     }
 }
@@ -130,18 +164,7 @@ pub fn set_enabled(on: bool) {
 /// current map section (before its terminating `MapLoaded`, or before
 /// `End` on the last/only map) or `Some(i)` to insert at index `i`.
 pub fn arm_add(target: Option<usize>) {
-    let armed = EDITOR_STATE.with_borrow_mut(|s| {
-        if !s.enabled {
-            return false;
-        }
-        s.pending = Some(Pending {
-            op: PendingOp::Add(target),
-            corner_a: None,
-        });
-        true
-    });
-    if !armed {
-        chat_print("&cLiveSplit: enable edit mode first (/client LiveSplit edit on)");
+    if !arm(PendingOp::Add(target)) {
         return;
     }
     match target {
@@ -159,18 +182,7 @@ pub fn arm_add(target: Option<usize>) {
 /// in `splits::editor_relocate` and surfaces via chat at commit. The two
 /// clicks revert locally, so a wasted arm leaves the map untouched.
 pub fn arm_redraw(i: usize) {
-    let armed = EDITOR_STATE.with_borrow_mut(|s| {
-        if !s.enabled {
-            return false;
-        }
-        s.pending = Some(Pending {
-            op: PendingOp::Redraw(i),
-            corner_a: None,
-        });
-        true
-    });
-    if !armed {
-        chat_print("&cLiveSplit: enable edit mode first (/client LiveSplit edit on)");
+    if !arm(PendingOp::Redraw(i)) {
         return;
     }
     chat_print(&format!(
@@ -180,8 +192,7 @@ pub fn arm_redraw(i: usize) {
 
 /// `edit cancel`. Discard a half-armed placement.
 pub fn cancel() {
-    let had = EDITOR_STATE.with_borrow_mut(|s| s.pending.take().is_some());
-    if had {
+    if disarm() {
         chat_print("&aLiveSplit: placement cancelled");
     } else {
         chat_print("&eLiveSplit: nothing to cancel");
@@ -242,14 +253,14 @@ pub fn set_kind_map(i: usize, name: Option<String>) {
 }
 
 /// `edit new <name>`. Start authoring a brand-new empty track named
-/// `name`, scoped to the current map. Auto-enables edit mode (installs the
-/// `SendBlock` hook + resets any in-progress run) so the next clicks place
+/// `name`, scoped to the current map. Auto-enables edit mode (prints
+/// "edit mode ON", resets any in-progress run) so the next clicks place
 /// checkpoints immediately. Replaces any currently loaded track.
 pub fn new_track(name: String) {
     if !is_enabled() {
-        set_enabled(true); // installs hook, prints "edit mode ON", resets run
+        set_enabled(true);
     }
-    EDITOR_STATE.with_borrow_mut(|s| s.pending = None); // drop any half-armed placement
+    disarm(); // drop any half-armed placement
     splits::new_track(name);
 }
 
@@ -257,9 +268,7 @@ pub fn new_track(name: String) {
 /// player can author a fresh one from scratch.
 pub fn clear() {
     splits::clear_track();
-    EDITOR_STATE.with_borrow_mut(|s| {
-        s.pending = None;
-    });
+    disarm(); // drop any half-armed placement
 }
 
 /// What a `SendBlock` click resolved to after consulting editor state.
@@ -283,10 +292,12 @@ enum ClickOutcome {
 /// recursion), then recorded as corner A or combined with A into a
 /// committed checkpoint.
 pub(super) fn consume_click(x: c_int, y: c_int, z: c_int, old: BlockID) -> bool {
-    // Scope the EDITOR_STATE borrow to the decision; the revert +
-    // splits mutation happen after it's released so the SendBlock hook
-    // can't double-borrow editor state, and `editor_add`'s own
-    // splits borrow stays independent.
+    // Scope the EDITOR_STATE borrow to the state-machine decision; the
+    // revert + splits mutation + `disarm()` happen after it's released so
+    // the SendBlock hook can't double-borrow editor state, and
+    // `editor_add`'s own splits borrow stays independent. Corner B leaves
+    // `pending` set here and lets the post-borrow `disarm()` clear it --
+    // the single exit point that also tears down the hook + permissions.
     let outcome = EDITOR_STATE.with_borrow_mut(|s| {
         if !s.enabled {
             return ClickOutcome::Ignore;
@@ -299,15 +310,11 @@ pub(super) fn consume_click(x: c_int, y: c_int, z: c_int, old: BlockID) -> bool 
                 pending.corner_a = Some(IVec3 { x, y, z });
                 ClickOutcome::CornerA
             }
-            Some(a) => {
-                let op = pending.op;
-                s.pending = None;
-                ClickOutcome::CornerB {
-                    a,
-                    b: IVec3 { x, y, z },
-                    op,
-                }
-            }
+            Some(a) => ClickOutcome::CornerB {
+                a,
+                b: IVec3 { x, y, z },
+                op: pending.op,
+            },
         }
     });
 
@@ -329,6 +336,7 @@ pub(super) fn consume_click(x: c_int, y: c_int, z: c_int, old: BlockID) -> bool 
                     splits::editor_relocate(i, aabb);
                 }
             }
+            disarm();
             true
         }
     }
@@ -348,14 +356,11 @@ fn revert_block(x: c_int, y: c_int, z: c_int, old: BlockID) {
 }
 
 pub struct EditorModule {
-    // Resource-lifecycle children: `hook` owns the `Server.SendBlock`
-    // splice, `preview` owns the rubber-band selection. Both implement
-    // `Module` so their teardown / reset / map-change invalidation flow
-    // through recursive dispatch. `children()` returns them in
-    // `[hook, preview]` order so reverse-dispatch frees preview then hook
-    // -- matching the former imperative `preview::clear(); hook::uninstall()`
-    // sequence.
+    // Resource-lifecycle children. `children()` returns them in
+    // `[hook, permissions, preview]` order so reverse-dispatch frees
+    // preview then permissions then hook.
     hook: HookModule,
+    permissions: PermissionsModule,
     preview: PreviewModule,
     // Owned for its Drop side-effect: TickEventHandler::Drop unregisters
     // the closure. Drives the per-frame `preview::reconcile()` (no
@@ -367,6 +372,7 @@ pub struct EditorModule {
 impl EditorModule {
     pub fn init() -> Self {
         let hook = HookModule::init();
+        let permissions = PermissionsModule::init();
         let preview = PreviewModule::init();
 
         let mut tick = TickEventHandler::new();
@@ -375,6 +381,7 @@ impl EditorModule {
         });
         Self {
             hook,
+            permissions,
             preview,
             _tick: tick,
         }
@@ -383,7 +390,7 @@ impl EditorModule {
 
 impl Module for EditorModule {
     fn children(&mut self) -> Vec<&mut dyn Module> {
-        vec![&mut self.hook, &mut self.preview]
+        vec![&mut self.hook, &mut self.permissions, &mut self.preview]
     }
 
     fn free(&mut self) {
@@ -410,9 +417,9 @@ impl Module for EditorModule {
 
     fn on_new_map_loaded(&mut self) {
         // A half-armed placement holds corner coords from the old map;
-        // they're meaningless after a map change. The `preview` child
-        // invalidates its cache and `hook` re-asserts the SendBlock splice
-        // via their own `on_new_map_loaded` hooks.
-        EDITOR_STATE.with_borrow_mut(|s| s.pending = None);
+        // they're meaningless after a map change. Drop it and tear down
+        // the hook + permission override. The `preview` child invalidates
+        // its cache via its own `on_new_map_loaded`.
+        disarm();
     }
 }

@@ -75,8 +75,8 @@ fn set_slot(f: Option<SendBlockFn>) {
 }
 
 /// Splice our hook into `Server.SendBlock`, saving the displaced fn.
-/// Idempotent, and safe to call repeatedly (e.g. re-asserted on
-/// `on_new_map_loaded`).
+/// Idempotent, and safe to call repeatedly (re-arming while already armed
+/// hits the already-on-top early return).
 pub(super) fn install() {
     let current = current_slot();
 
@@ -120,22 +120,20 @@ pub(super) fn uninstall() {
 }
 
 /// Owns the `Server.SendBlock` hook's resource lifecycle as an
-/// `EditorModule` child. Only the hooks that map cleanly onto the trait
-/// live here: `free` and `reset` uninstall, and `on_new_map_loaded`
-/// re-asserts the hook after a reconnect / world reload re-points the slot.
-/// Install stays **lazy** -- the slot is unpopulated at construction, so
-/// `set_enabled` / `new_track` still call [`install`] / [`uninstall`]
-/// imperatively, and `consume_click` (read+mutate of editor state) stays in
-/// [`super`].
+/// `EditorModule` child. Install / uninstall are driven imperatively by
+/// the editor's `arm` / `disarm`: the hook is spliced in only for the
+/// duration of an armed two-click capture and removed the moment it ends.
+/// This child contributes the teardown hooks that map cleanly onto the
+/// trait -- `free` and `reset` both [`uninstall`] -- as a safety net.
 ///
-/// The `reset` override is **redundant**: `EditorModule::reset` already
-/// calls `set_enabled(false)` (-> [`uninstall`]) when edit mode was on --
-/// the only state in which our hook is on top. It's kept anyway so this
-/// child uninstalls its own resource on the clean-slate path without relying
-/// on the parent. It's safe precisely because it's redundant: [`uninstall`]
-/// is a no-op whenever we're not on top (foreign handler stacked over us, or
-/// already uninstalled), so the unconditional call can't disturb the
-/// fall-through chain in the reset-while-disabled case.
+/// That teardown is **redundant**: `disarm` already uninstalls on every
+/// path that ends a capture (commit, cancel, `edit off`, map change), and
+/// our hook is only ever on top during a capture. It's kept anyway so this
+/// child owns its own resource cleanup on the teardown / clean-slate paths
+/// without relying on the parent's bookkeeping. It's safe precisely because
+/// it's redundant: [`uninstall`] is a no-op whenever we're not on top (a
+/// foreign handler stacked over us, or already uninstalled), so the
+/// unconditional call can't disturb the fall-through chain.
 pub(super) struct HookModule;
 
 impl HookModule {
@@ -152,21 +150,11 @@ impl Module for HookModule {
     }
 
     fn reset(&mut self) {
-        // Redundant safety net: `EditorModule::reset` already uninstalls via
-        // `set_enabled(false)` when edit mode was on (the only state in which
-        // we're on top). `uninstall` is a no-op when we're not on top, so
-        // calling it unconditionally on the clean-slate path is always safe
-        // and makes this child own its own teardown rather than leaning on
-        // the parent.
+        // Redundant safety net: `disarm` already uninstalls on every path
+        // that ends a capture (the only state in which we're on top).
+        // `uninstall` is a no-op when we're not on top, so calling it
+        // unconditionally on the clean-slate path is always safe and makes
+        // this child own its own teardown rather than leaning on the parent.
         uninstall();
-    }
-
-    fn on_new_map_loaded(&mut self) {
-        // Reconnect / world reload (`MPConnection_Init`) re-points
-        // `Server.SendBlock`, dropping our hook. Re-assert it while edit
-        // mode is on.
-        if editor::is_enabled() {
-            install();
-        }
     }
 }
