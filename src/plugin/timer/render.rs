@@ -114,6 +114,12 @@ fn draw_overlay(vb: GfxResourceID) {
             return;
         };
 
+        // Right edge of the play area; rows are right-aligned against it so
+        // the overlay hugs the right side of the screen (mirrors the
+        // left-anchored `MARGIN` used for `y`).
+        #[expect(clippy::cast_possible_truncation, reason = "window width fits in i16")]
+        let screen_width = unsafe { Game.Width } as i16;
+
         let clock = super::clock();
         let elapsed = state.elapsed_now(clock);
 
@@ -134,8 +140,10 @@ fn draw_overlay(vb: GfxResourceID) {
 
         let clock_height = CLOCK_TEX.with_borrow(|slot| {
             if let Some((_, tex)) = slot.as_ref() {
-                draw_texture_at(vb, tex, MARGIN, MARGIN, clock_color);
-                tex.as_texture().height as i16
+                let t = tex.as_texture();
+                let x = screen_width - t.width as i16 - MARGIN;
+                draw_texture_at(vb, tex, x, MARGIN, clock_color);
+                t.height as i16
             } else {
                 0
             }
@@ -186,9 +194,10 @@ fn draw_overlay(vb: GfxResourceID) {
         let mut y = MARGIN + clock_height + ROW_GAP;
         SPLIT_TEXTURES.with_borrow(|textures| {
             for tex in textures.iter().flatten() {
-                let row_h = tex.as_texture().height as i16;
-                draw_texture_at(vb, tex, MARGIN, y, PackedCol_Make(255, 255, 255, 220));
-                y += row_h + ROW_GAP;
+                let t = tex.as_texture();
+                let x = screen_width - t.width as i16 - MARGIN;
+                draw_texture_at(vb, tex, x, y, PackedCol_Make(255, 255, 255, 220));
+                y += t.height as i16 + ROW_GAP;
             }
         });
     });
