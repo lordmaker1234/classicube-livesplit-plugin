@@ -13,14 +13,13 @@
 //!
 //! ## Callback fire order
 //!
-//! On a settled-map edge the tick fires **splits -> autoload -> editor**:
+//! On a settled-map edge the tick fires **splits -> autoload**:
 //! - `splits` first so its run engine advances `next_index` (via
 //!   `observe_map` -> `step_on_map_loaded`) before...
-//! - `autoload` reads `run_in_progress()` / `track_includes_map()`, and
-//! - `editor` reads `track_includes_map()` for its leave-the-track check.
+//! - `autoload` reads `run_in_progress()` / `track_includes_map()`.
 //!
 //! The slots are fixed (not a `Vec`) because this order is load-bearing and
-//! the subscriber set is a known three.
+//! the subscriber set is a known two.
 //!
 //! ## Tick ordering vs `SplitsModule`
 //!
@@ -54,11 +53,10 @@ thread_local! {
     static LAST_SEEN_MAP: RefCell<Option<String>> = const { RefCell::new(None) };
 
     /// Fixed subscriber slots, invoked in declaration order on each edge
-    /// (splits -> autoload -> editor). Registered by the respective modules
-    /// at `init`, cleared at `free`.
+    /// (splits -> autoload). Registered by the respective modules at `init`,
+    /// cleared at `free`.
     static SPLITS_CALLBACK: Cell<Option<MapCallback>> = const { Cell::new(None) };
     static AUTOLOAD_CALLBACK: Cell<Option<MapCallback>> = const { Cell::new(None) };
-    static EDITOR_CALLBACK: Cell<Option<MapCallback>> = const { Cell::new(None) };
 }
 
 pub fn set_splits_callback(f: MapCallback) {
@@ -73,13 +71,6 @@ pub fn set_autoload_callback(f: MapCallback) {
 }
 pub fn clear_autoload_callback() {
     AUTOLOAD_CALLBACK.set(None);
-}
-
-pub fn set_editor_callback(f: MapCallback) {
-    EDITOR_CALLBACK.set(Some(f));
-}
-pub fn clear_editor_callback() {
-    EDITOR_CALLBACK.set(None);
 }
 
 /// Snapshot the current map name. In singleplayer / file-loaded worlds the
@@ -150,14 +141,11 @@ fn observe() {
     }
     LAST_SEEN_MAP.with_borrow_mut(|last| *last = Some(map.clone()));
 
-    // Fixed order: splits advances its cursor before autoload/editor read it.
+    // Fixed order: splits advances its cursor before autoload reads it.
     if let Some(f) = SPLITS_CALLBACK.get() {
         f(&map);
     }
     if let Some(f) = AUTOLOAD_CALLBACK.get() {
-        f(&map);
-    }
-    if let Some(f) = EDITOR_CALLBACK.get() {
         f(&map);
     }
 }

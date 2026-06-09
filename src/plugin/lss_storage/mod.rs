@@ -82,16 +82,16 @@ impl Module for LssStorageModule {
 /// Autoload callback registered with `MapModule`. Fired on a settled-map
 /// edge with the new map name. Picks the newest `.lss` for the
 /// `(server, map)` directory and loads it -- unless a run is in progress, or
-/// the editor is mid-edit on a track that already includes this map (so
-/// crossing into another of its maps doesn't clobber the edit). Files are
-/// never modified after creation.
+/// edit mode is on (an authoring session keeps the loaded track regardless of
+/// whether the new map is part of it, so a saved `.lss` on the destination
+/// map can't clobber the edit). Files are never modified after creation.
 fn autoload_on_map_change(map_name: &str) {
     if splits::run_in_progress() {
         debug!("autoload skipped: run in progress");
         return;
     }
-    if editor::is_enabled() && splits::track_includes_map(map_name) {
-        debug!("autoload skipped: editing a track that includes this map");
+    if editor::is_enabled() {
+        debug!("autoload skipped: edit mode on");
         return;
     }
     let Some(server) = map::current_server_display() else {

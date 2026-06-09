@@ -2343,6 +2343,63 @@ fn includes_map_unrelated_map_returns_false() {
     assert!(!state.includes_map("unrelated_map"));
 }
 
+// --- is_off_track ---
+
+#[test]
+fn is_off_track_true_when_map_not_in_track() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    assert!(
+        state.is_off_track("unrelated_map"),
+        "a loaded track + unrelated map => off-track"
+    );
+}
+
+#[test]
+fn is_off_track_false_for_starting_map() {
+    let mut state = SplitsState::default();
+    state.load(linear_track(), Some(TEST_MAP.to_string()));
+    assert!(
+        !state.is_off_track(TEST_MAP),
+        "starting_map is always on-track"
+    );
+}
+
+#[test]
+fn is_off_track_false_for_mapload_target() {
+    let track = Track {
+        name: "multi".into(),
+        checkpoints: vec![
+            cp(CheckpointKind::Start, (0.0, 0.0, 0.0), (2.0, 4.0, 2.0)),
+            cp_map(CheckpointKind::Split, "mid"),
+            cp_map(CheckpointKind::End, "goal"),
+        ],
+    };
+    let mut state = SplitsState::default();
+    state.load(track, Some("spawn".to_string()));
+    assert!(
+        !state.is_off_track("mid"),
+        "mid is a MapLoaded target => on-track"
+    );
+    assert!(
+        !state.is_off_track("goal"),
+        "goal is a MapLoaded target => on-track"
+    );
+    assert!(
+        state.is_off_track("lobby"),
+        "lobby is not in the track => off-track"
+    );
+}
+
+#[test]
+fn is_off_track_false_when_no_track_loaded() {
+    let state = SplitsState::default();
+    assert!(
+        !state.is_off_track("any_map"),
+        "no track loaded => not off-track (nothing to leave)"
+    );
+}
+
 #[test]
 fn unload_leaves_no_track_and_run_not_in_progress() {
     let mut state = SplitsState::default();

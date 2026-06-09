@@ -15,6 +15,7 @@ use tracing::{debug, info};
 use crate::{
     chat_print,
     plugin::{
+        editor,
         livesplit::{self, Command, TimerEvent},
         map,
         module::Module,
@@ -242,6 +243,20 @@ fn on_map_change(map_name: &str) {
         chat_print(
             "&cLiveSplit: split fired but no timer connected (run /client LiveSplit status)",
         );
+    }
+
+    // Leaving the track's maps drops it so stale HUD boxes / overlay don't
+    // linger on an unrelated map. Edit mode is the exception: an authoring
+    // session keeps the track (and stays enabled) so the user can extend it
+    // onto the new map. `with_timer_reset` handles a connected timer if the
+    // unload aborts a begun run; `observe_map` already reset an in-progress
+    // run above, so this only fires for a *finished* run that hasn't been
+    // cleared yet.
+    if !editor::is_enabled() && with_state(|s| s.is_off_track(map_name)).unwrap_or(false) {
+        with_timer_reset("after leaving the track's maps", || {
+            with_state(|s| s.unload());
+        });
+        chat_print("&eLiveSplit: left the track's maps -- track unloaded");
     }
 }
 

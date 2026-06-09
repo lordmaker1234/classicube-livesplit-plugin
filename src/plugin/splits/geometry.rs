@@ -400,6 +400,13 @@ impl SplitsState {
         }
     }
 
+    /// A track is loaded and `map_name` is outside its map set. The
+    /// edit-mode exception (keep the track while editing) is applied by the
+    /// caller; this predicate is purely structural.
+    pub fn is_off_track(&self, map_name: &str) -> bool {
+        self.track.is_some() && !self.includes_map(map_name)
+    }
+
     /// Whether `map_name` is part of the loaded track's map set --
     /// its `starting_map` or the target of any `Trigger::MapLoaded`
     /// checkpoint. Returns `false` when no track is loaded.

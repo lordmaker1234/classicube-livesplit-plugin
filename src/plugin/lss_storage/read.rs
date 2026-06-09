@@ -48,10 +48,8 @@ pub async fn try_autoload(server: String, map: String) {
                 // the async hop: if the user enabled edit mode *after*
                 // the tick already spawned this task, suppress the load
                 // just like the tick would have.
-                if editor::is_enabled() && splits::track_includes_map(&map) {
-                    debug!(
-                        "autoload skipped on main thread: editing a track that includes this map"
-                    );
+                if editor::is_enabled() {
+                    debug!("autoload skipped on main thread: edit mode on");
                     return;
                 }
                 // `false` means the plugin is mid-teardown

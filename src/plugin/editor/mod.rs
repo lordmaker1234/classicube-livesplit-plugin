@@ -30,7 +30,6 @@ use self::{hook::HookModule, preview::PreviewModule};
 use crate::{
     chat_print,
     plugin::{
-        map,
         module::Module,
         splits::{
             self,
@@ -124,24 +123,6 @@ pub fn set_enabled(on: bool) {
         hook::uninstall();
         chat_print("&aLiveSplit: edit mode OFF");
     }
-}
-
-/// Map-change callback registered with `MapModule`. Fired on a settled-map
-/// edge with the new map name; when that map is NOT part of the loaded track
-/// (neither its `starting_map` nor a `Trigger::MapLoaded` target) and edit
-/// mode is on, turn edit mode off. The map module owns the edge latch and
-/// the None-ignore rule, so this just acts on the settled name (the
-/// settling matters because at `OnNewMapLoaded` time `World.Name` is zeroed
-/// and the tab-list group still names the previous map).
-fn disable_if_left_track(map_name: &str) {
-    if !is_enabled() {
-        return;
-    }
-    if splits::track_includes_map(map_name) {
-        return;
-    }
-    chat_print("&eLiveSplit: left the track's maps -- edit mode auto-disabled");
-    set_enabled(false);
 }
 
 /// `edit add [i]`. Arm a placement: the next two block clicks become a
@@ -388,11 +369,6 @@ impl EditorModule {
         let hook = HookModule::init();
         let preview = PreviewModule::init();
 
-        // Leave-the-track auto-disable runs off `MapModule`'s settled-map
-        // edge (fired last, after splits / autoload). The per-frame tick is
-        // kept only for the rubber-band `preview::reconcile()`.
-        map::set_editor_callback(disable_if_left_track);
-
         let mut tick = TickEventHandler::new();
         tick.on(move |_| {
             preview::reconcile();
@@ -412,11 +388,10 @@ impl Module for EditorModule {
 
     fn free(&mut self) {
         // `hook` / `preview` children already cleared their own resources
-        // (reverse-dispatch runs them before this); here we stop receiving
-        // map-change edges and clear the editor's own thread-local state.
-        map::clear_editor_callback();
+        // (reverse-dispatch runs them before this); clear the editor's own
+        // thread-local state.
         reset_state();
-        debug!("EditorModule freed; editor state + map callback cleared");
+        debug!("EditorModule freed; editor state cleared");
         // `_tick` unregisters via its own Drop after `free` returns; no
         // render or tick event fires during synchronous teardown.
     }
