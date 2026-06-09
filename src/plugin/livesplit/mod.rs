@@ -157,12 +157,19 @@ pub fn timer_connected() -> bool {
     })
 }
 
-pub fn any_connected() -> bool {
+pub fn external_connected() -> bool {
     if server_connected() {
         return true;
     }
     #[cfg(windows)]
     if client_connected() {
+        return true;
+    }
+    false
+}
+
+pub fn any_connected() -> bool {
+    if external_connected() {
         return true;
     }
     if timer_connected() {

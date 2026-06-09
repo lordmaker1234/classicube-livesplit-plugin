@@ -17,6 +17,7 @@ use tracing::debug;
 
 use super::{TIMER_STATE, context, format::format_time, texture};
 use crate::plugin::{
+    livesplit,
     splits::{
         self,
         geometry::{CheckpointKind, kind_color_code},
@@ -84,6 +85,14 @@ unsafe extern "C" fn render(_elem: *mut c_void, _delta: f32) {
         let Some(vb) = context::vb_resource_id() else {
             return;
         };
+        let visible = match super::SHOW_MODE.get() {
+            super::ShowMode::Auto => !livesplit::external_connected(),
+            super::ShowMode::On => true,
+            super::ShowMode::Off => false,
+        };
+        if !visible {
+            return;
+        }
 
         // Restore 2D ortho state defensively: the HUD screen at a lower
         // priority may have left us in 3D state. Gfx_Begin2D already did
@@ -101,9 +110,6 @@ unsafe extern "C" fn render(_elem: *mut c_void, _delta: f32) {
         Gfx_SetAlphaTest(0);
         Gfx_SetVertexFormat(VertexFormat__VERTEX_FORMAT_TEXTURED);
 
-        if !super::SHOW.get() {
-            return;
-        }
         draw_overlay(vb);
     }
 }

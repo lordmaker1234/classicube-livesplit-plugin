@@ -23,16 +23,30 @@ use classicube_sys::OwnedScreen;
 use tracing::debug;
 
 pub use self::state::TimerState;
-use crate::plugin::{livesplit::protocol::Command, module::Module};
+use crate::plugin::{
+    livesplit::{self, protocol::Command},
+    module::Module,
+};
+
+/// Visibility mode for the built-in timer overlay.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ShowMode {
+    /// Default: show unless an external timer is connected.
+    Auto,
+    /// User forced on via `timer on` -- show even with an external connected.
+    On,
+    /// User forced off via `timer off`.
+    Off,
+}
 
 thread_local! {
     /// The live timer state, applied on the main thread from the CMD_TX
     /// forwarder and read by the render hook each frame.
     pub(crate) static TIMER_STATE: RefCell<Option<TimerState>> = const { RefCell::new(None) };
 
-    /// Whether the timer overlay is currently visible. Toggled by
-    /// `/client LiveSplit timer [on|off]`.
-    static SHOW: Cell<bool> = const { Cell::new(true) };
+    /// Visibility mode for the overlay. `Auto` (default) hides when an
+    /// external timer is connected; `On`/`Off` are user overrides.
+    static SHOW_MODE: Cell<ShowMode> = const { Cell::new(ShowMode::Auto) };
 
     /// Monotonic origin captured once at `TimerModule::init`. All clock()
     /// readings are relative to this, giving a stable f64 second counter.
@@ -51,9 +65,6 @@ pub(crate) fn clock() -> f64 {
 /// Apply one command to the main-thread timer state. Called by the forwarder
 /// task (hopped via `spawn_on_main_thread`). No-ops if the module is torn down.
 pub fn apply_command(cmd: Command) {
-    if !SHOW.get() {
-        // Still apply to state even when display is off — the run advances.
-    }
     TIMER_STATE.with_borrow_mut(|slot| {
         if let Some(state) = slot.as_mut() {
             state.apply(&cmd, clock());
@@ -62,13 +73,22 @@ pub fn apply_command(cmd: Command) {
 }
 
 pub fn set_show(show: bool) {
-    SHOW.set(show);
+    SHOW_MODE.set(if show { ShowMode::On } else { ShowMode::Off });
 }
 
 pub fn toggle_show() -> bool {
-    let show = !SHOW.get();
-    SHOW.set(show);
-    show
+    let currently_visible = match SHOW_MODE.get() {
+        ShowMode::Auto => !livesplit::external_connected(),
+        ShowMode::On => true,
+        ShowMode::Off => false,
+    };
+    let new_show = !currently_visible;
+    SHOW_MODE.set(if new_show {
+        ShowMode::On
+    } else {
+        ShowMode::Off
+    });
+    new_show
 }
 
 /// Drop cached render textures (called by `context::context_lost` and by
@@ -87,7 +107,7 @@ impl TimerModule {
     pub fn init() -> Self {
         CLOCK_ORIGIN.with_borrow_mut(|o| *o = Some(Instant::now()));
         TIMER_STATE.with_borrow_mut(|s| *s = Some(TimerState::default()));
-        SHOW.set(true);
+        SHOW_MODE.set(ShowMode::Auto);
 
         let (context_lost, context_recreated) = context::subscribe();
         let screen = render::install();
