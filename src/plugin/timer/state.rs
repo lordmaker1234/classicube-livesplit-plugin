@@ -1,7 +1,11 @@
 #[cfg(test)]
 mod tests;
 
-use crate::plugin::{livesplit::protocol::Command, splits, splits::geometry::CheckpointKind};
+use crate::plugin::{
+    livesplit::protocol::Command,
+    splits,
+    splits::geometry::{CheckpointKind, Trigger},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Phase {
@@ -16,6 +20,10 @@ pub enum Phase {
 pub struct SplitRow {
     pub kind: CheckpointKind,
     pub label: String,
+    /// True for a `Trigger::MapLoaded` checkpoint. Used by the overlay to color
+    /// map-transition rows purple regardless of the checkpoint's `kind` field
+    /// (which is always `Split` for map-transition checkpoints).
+    pub is_map: bool,
     /// Captured game-time at the moment this split fired, or `None` if not yet reached.
     pub time: Option<f64>,
 }
@@ -169,6 +177,7 @@ impl TimerState {
                     .map(|cp| SplitRow {
                         kind: cp.kind,
                         label: cp.label.clone(),
+                        is_map: matches!(cp.trigger, Trigger::MapLoaded(_)),
                         time: None,
                     })
                     .collect()

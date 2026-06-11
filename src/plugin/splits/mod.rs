@@ -21,8 +21,8 @@ use crate::{
         module::Module,
         pause_triggers,
         splits::geometry::{
-            Aabb, Boundary, CheckpointKind, RetypeTarget, SplitsState, Track, observe_map, step,
-            validate_pause_resume_pairing,
+            Aabb, Boundary, CheckpointKind, RetypeTarget, SplitsState, Track, Trigger, observe_map,
+            step, validate_pause_resume_pairing,
         },
     },
 };
@@ -366,20 +366,28 @@ pub fn current_track() -> Option<Track> {
     with_state(|s| s.track.clone()).flatten()
 }
 
-/// Kind + label of every non-Start checkpoint in the loaded track, in
-/// checkpoint order -- i.e. the rows that will each become a
-/// `Command::Split`. Mirrors what the built-in timer's `do_start`
-/// populates `split_rows` from, so the overlay can show the same list
-/// (with blank times) before a run begins. Empty when no track is loaded,
-/// the track has only a Start (or is empty), or the plugin is mid-teardown.
-pub fn checkpoint_rows() -> Vec<(CheckpointKind, String)> {
+/// Kind, label, and map-transition flag of every non-Start checkpoint in the
+/// loaded track, in checkpoint order -- i.e. the rows that will each become a
+/// `Command::Split`. The `bool` is `true` for a `Trigger::MapLoaded`
+/// checkpoint (used by the timer overlay to color map-transition rows purple).
+/// Mirrors what the built-in timer's `do_start` populates `split_rows` from,
+/// so the overlay can show the same list (with blank times) before a run
+/// begins. Empty when no track is loaded, the track has only a Start (or is
+/// empty), or the plugin is mid-teardown.
+pub fn checkpoint_rows() -> Vec<(CheckpointKind, String, bool)> {
     with_state(|s| {
         s.track.as_ref().map_or_else(Vec::new, |t| {
             t.checkpoints
                 .get(1..)
                 .unwrap_or_default()
                 .iter()
-                .map(|cp| (cp.kind, cp.label.clone()))
+                .map(|cp| {
+                    (
+                        cp.kind,
+                        cp.label.clone(),
+                        matches!(cp.trigger, Trigger::MapLoaded(_)),
+                    )
+                })
                 .collect()
         })
     })
@@ -767,7 +775,7 @@ pub fn print_splits(suppress_next: bool) {
         let next = (!suppress_next).then_some(s.next_index);
         s.track
             .as_ref()
-            .map(|t| geometry::format_splits(t, &s.fired, next))
+            .map(|t| geometry::format_splits(t, &s.fired, next, true))
     }) else {
         chat_print("&eLiveSplit: plugin not active");
         return;

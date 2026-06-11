@@ -20,7 +20,7 @@ use crate::plugin::{
     editor, livesplit,
     splits::{
         self,
-        geometry::{CheckpointKind, kind_color_code},
+        geometry::{CheckpointKind, format_splits, row_color_code},
     },
     timer::state::Phase,
 };
@@ -50,16 +50,21 @@ fn calc_ortho_matrix(width: f32, height: f32, z_near: f32, z_far: f32) -> Matrix
 
 const MARGIN: i16 = 8;
 const ROW_GAP: i16 = 2;
+/// Top margin used in edit mode (left side). Clears the debug HUD text block
+/// in the top-left corner: line1 (FPS/verts) + posAtlas (Position:) + line2
+/// (hacks), each ~20 px tall starting at y=2, plus `MARGIN` gap.
+const EDIT_MARGIN_TOP: i16 = 2 + 3 * 20 + MARGIN;
 
 thread_local! {
     /// Cached texture for the clock line, keyed by the formatted string.
     static CLOCK_TEX: RefCell<Option<(String, OwnedTexture)>> = const { RefCell::new(None) };
 
-    /// Cached textures for the split rows, keyed by the row content vector.
-    /// Rebuilt whenever any split fires, is undone, or the run resets.
+    /// Cached textures for the split rows, keyed by the rendered row strings.
+    /// Rebuilt whenever any split fires, is undone, the run resets, or the
+    /// edit-mode toggle changes the row format.
     static SPLIT_TEXTURES: RefCell<Vec<Option<OwnedTexture>>> = const { RefCell::new(Vec::new()) };
-    /// The `(kind, label, time_string)` set `SPLIT_TEXTURES` was built from.
-    static LAST_SPLIT_KEY: RefCell<Vec<(CheckpointKind, String, Option<String>)>> = const { RefCell::new(Vec::new()) };
+    /// The rendered row strings `SPLIT_TEXTURES` was built from.
+    static LAST_SPLIT_KEY: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 pub fn invalidate() {
@@ -85,16 +90,18 @@ unsafe extern "C" fn render(_elem: *mut c_void, _delta: f32) {
         let Some(vb) = context::vb_resource_id() else {
             return;
         };
-        // No track loaded: nothing to time, nothing to show.
-        // Edit mode hides the overlay entirely: authoring isn't a timed
-        // attempt, and the HUD shows editor aids in the same screen region.
+        // No track loaded: nothing to show.
+        // In edit mode the overlay is always shown (authoring aid: mirrors the
+        // in-world labels, bypasses the timer on/off toggle). Outside edit mode
+        // the usual show-mode + external-timer gate applies.
+        let edit_mode = editor::is_enabled();
         let visible = splits::track_loaded()
-            && !editor::is_enabled()
-            && match super::SHOW_MODE.get() {
-                super::ShowMode::Auto => !livesplit::external_connected(),
-                super::ShowMode::On => true,
-                super::ShowMode::Off => false,
-            };
+            && (edit_mode
+                || match super::SHOW_MODE.get() {
+                    super::ShowMode::Auto => !livesplit::external_connected(),
+                    super::ShowMode::On => true,
+                    super::ShowMode::Off => false,
+                });
         if !visible {
             return;
         }
@@ -115,11 +122,11 @@ unsafe extern "C" fn render(_elem: *mut c_void, _delta: f32) {
         Gfx_SetAlphaTest(0);
         Gfx_SetVertexFormat(VertexFormat__VERTEX_FORMAT_TEXTURED);
 
-        draw_overlay(vb);
+        draw_overlay(vb, edit_mode);
     }
 }
 
-fn draw_overlay(vb: GfxResourceID) {
+fn draw_overlay(vb: GfxResourceID, edit_mode: bool) {
     TIMER_STATE.with_borrow(|slot| {
         let Some(state) = slot.as_ref() else {
             return;
@@ -134,84 +141,118 @@ fn draw_overlay(vb: GfxResourceID) {
         let clock = super::clock();
         let elapsed = state.elapsed_now(clock);
 
-        // --- Clock line ---
-        let clock_str = format_time(elapsed);
-        let clock_color = phase_color(state.phase);
+        // --- Clock line (play mode only) ---
+        // In edit mode there is no run to time, so the clock is hidden.
+        let clock_height = if edit_mode {
+            0
+        } else {
+            let clock_str = format_time(elapsed);
+            let clock_color = phase_color(state.phase);
 
-        // Rebuild clock texture if the string changed (happens every frame
-        // while Running since the millisecond digits update continuously).
-        let needs_clock_rebuild =
-            CLOCK_TEX.with_borrow(|slot| slot.as_ref().is_none_or(|(s, _)| s != &clock_str));
-        if needs_clock_rebuild {
-            let new_tex = texture::create_clock_texture(&clock_str);
-            CLOCK_TEX.with_borrow_mut(|slot| {
-                *slot = new_tex.map(|t| (clock_str.clone(), t));
-            });
-        }
-
-        let clock_height = CLOCK_TEX.with_borrow(|slot| {
-            if let Some((_, tex)) = slot.as_ref() {
-                let t = tex.as_texture();
-                let x = screen_width - t.width as i16 - MARGIN;
-                draw_texture_at(vb, tex, x, MARGIN, clock_color);
-                t.height as i16
-            } else {
-                0
+            // Rebuild clock texture if the string changed (happens every frame
+            // while Running since the centisecond digits update continuously).
+            let needs_clock_rebuild =
+                CLOCK_TEX.with_borrow(|slot| slot.as_ref().is_none_or(|(s, _)| s != &clock_str));
+            if needs_clock_rebuild {
+                let new_tex = texture::create_clock_texture(&clock_str);
+                CLOCK_TEX.with_borrow_mut(|slot| {
+                    *slot = new_tex.map(|t| (clock_str.clone(), t));
+                });
             }
-        });
+
+            CLOCK_TEX.with_borrow(|slot| {
+                if let Some((_, tex)) = slot.as_ref() {
+                    let t = tex.as_texture();
+                    let x = screen_width - t.width as i16 - MARGIN;
+                    draw_texture_at(vb, tex, x, MARGIN, clock_color);
+                    t.height as i16
+                } else {
+                    0
+                }
+            })
+        };
 
         // --- Split rows ---
-        // Pre-run (NotRunning, or after a Reset) the state's `split_rows` are
-        // empty -- they're only populated at `Command::Start`. Derive the row
-        // list from the loaded track instead, so the split list is visible on
-        // track load with blank times. Once a run begins, the state's rows are
-        // the source of truth (they carry the captured per-split times) and
-        // also reflect live editor edits made before Start.
-        let split_key: Vec<(CheckpointKind, String, Option<String>)> =
-            if state.split_rows.is_empty() {
-                splits::checkpoint_rows()
-                    .into_iter()
-                    .map(|(kind, label)| (kind, label, None))
-                    .collect()
-            } else {
-                state
-                    .split_rows
-                    .iter()
-                    .map(|row| (row.kind, row.label.clone(), row.time.map(format_time)))
-                    .collect()
-            };
+        // Edit mode: full track list in HUD-label style (`1: label (kind)`),
+        // matching the in-world floating labels. No times -- authoring isn't a
+        // timed attempt.
+        //
+        // Play mode, pre-run (NotRunning / after Reset): `split_rows` is empty
+        // (only populated at `Command::Start`); derive rows from the loaded
+        // track with blank times so the list is visible before a run begins.
+        //
+        // Play mode, running/ended: `split_rows` is the source of truth,
+        // carrying captured per-split times.
+        //
+        // The cache key is the rendered strings themselves, so any change that
+        // affects the display text (mode toggle, editor add/remove/relabel,
+        // split fire, undo, reset) automatically invalidates without a
+        // separate hook.
+        let row_texts: Vec<String> = if edit_mode {
+            splits::current_track().map_or_else(Vec::new, |track| {
+                let mut lines = format_splits(&track, &[], None, false);
+                if !lines.is_empty() {
+                    lines.remove(0); // drop the header line
+                }
+                lines
+            })
+        } else if state.split_rows.is_empty() {
+            splits::checkpoint_rows()
+                .into_iter()
+                .map(|(kind, label, is_map)| play_row_text(kind, &label, None, is_map))
+                .collect()
+        } else {
+            state
+                .split_rows
+                .iter()
+                .map(|row| play_row_text(row.kind, &row.label, row.time, row.is_map))
+                .collect()
+        };
 
         let needs_rebuild =
-            LAST_SPLIT_KEY.with_borrow(|last| last.as_slice() != split_key.as_slice());
+            LAST_SPLIT_KEY.with_borrow(|last| last.as_slice() != row_texts.as_slice());
         if needs_rebuild {
             debug!("rebuilding timer split row textures");
-            let textures: Vec<Option<OwnedTexture>> = split_key
+            let textures: Vec<Option<OwnedTexture>> = row_texts
                 .iter()
-                .map(|(kind, label, time_opt)| {
-                    let time_str = time_opt.as_deref().unwrap_or("--:--.---");
-                    let code = kind_color_code(*kind);
-                    let text = if label.is_empty() {
-                        format!("{code}{time_str}")
-                    } else {
-                        format!("{code}{label}  &f{time_str}")
-                    };
-                    texture::create_split_texture(&text)
-                })
+                .map(|text| texture::create_split_texture(text))
                 .collect();
             SPLIT_TEXTURES.with_borrow_mut(|slot| *slot = textures);
-            LAST_SPLIT_KEY.with_borrow_mut(|last| *last = split_key);
+            LAST_SPLIT_KEY.with_borrow_mut(|last| *last = row_texts);
         }
 
-        let mut y = MARGIN + clock_height + ROW_GAP;
+        let mut y = if edit_mode {
+            EDIT_MARGIN_TOP
+        } else {
+            MARGIN + clock_height + ROW_GAP
+        };
         SPLIT_TEXTURES.with_borrow(|textures| {
             for tex in textures.iter().flatten() {
                 let t = tex.as_texture();
-                let x = screen_width - t.width as i16 - MARGIN;
-                draw_texture_at(vb, tex, x, y, PackedCol_Make(255, 255, 255, 220));
+                let x = if edit_mode {
+                    MARGIN
+                } else {
+                    screen_width - t.width as i16 - MARGIN
+                };
+                draw_texture_at(vb, tex, x, y, PackedCol_Make(255, 255, 255, 255));
                 y += t.height as i16 + ROW_GAP;
             }
         });
     });
+}
+
+/// Format a play-mode split row: kind-colored label and time side by side.
+/// Empty label shows just the time. `time = None` renders the placeholder.
+/// `is_map` selects the purple map-transition color instead of the kind color.
+fn play_row_text(kind: CheckpointKind, label: &str, time: Option<f64>, is_map: bool) -> String {
+    let time_str = time.map(format_time);
+    let time_str = time_str.as_deref().unwrap_or("--:--.---");
+    let code = row_color_code(kind, is_map);
+    if label.is_empty() {
+        format!("{code}{time_str}")
+    } else {
+        format!("{code}{label}  &f{time_str}")
+    }
 }
 
 fn phase_color(phase: Phase) -> u32 {

@@ -230,7 +230,8 @@ pub(crate) fn kind_name(kind: CheckpointKind) -> &'static str {
 /// ClassiCube `&`-code whose hue matches `hud::boxes::color_for_kind`'s
 /// `PackedCol` for this kind. The two hue tables are deliberately separate
 /// (`PackedCol` vs `&`-code, different types); keep them in sync if a hue
-/// ever changes. Used by [`format_splits`] and `hud::labels::kind_color_code`.
+/// ever changes. Used by [`format_splits`], [`display_label`], and the timer
+/// overlay.
 pub(crate) fn kind_color_code(kind: CheckpointKind) -> &'static str {
     match kind {
         CheckpointKind::Start => "&a",  // green  (0,255,0)
@@ -248,6 +249,16 @@ pub(crate) fn kind_color_code(kind: CheckpointKind) -> &'static str {
 /// tables don't need a matching entry: map-transition checkpoints have no
 /// AABB, so they never draw a box or label.
 const MAP_COLOR_CODE: &str = "&d";
+
+/// Color code for a timer/overlay row. Map-transition rows use
+/// [`MAP_COLOR_CODE`] (purple); every other row is colored by kind. The
+/// play-mode timer overlay only has `(kind, is_map)` to work with (its row
+/// sources collapse a `MapLoaded` checkpoint's kind to `Split`), so this
+/// mirrors the per-row color choice [`format_splits`] makes from the full
+/// [`Trigger`].
+pub(crate) fn row_color_code(kind: CheckpointKind, is_map: bool) -> &'static str {
+    if is_map { MAP_COLOR_CODE } else { kind_color_code(kind) }
+}
 
 /// Render the loaded track as chat lines for `/client LiveSplit splits`: a
 /// header line plus one line per checkpoint, in track order. `fired` comes
@@ -268,6 +279,7 @@ pub(crate) fn format_splits(
     track: &Track,
     fired: &[bool],
     next_index: Option<usize>,
+    show_marker: bool,
 ) -> Vec<String> {
     let total = track.checkpoints.len();
     let fired_count = fired.iter().filter(|b| **b).count();
@@ -312,17 +324,64 @@ pub(crate) fn format_splits(
         lines.push(if Some(i) == next_index {
             // Wrap the next-target row like the HUD label: `&e> {body} &e<`.
             format!("&e> #{i} {code}{kind_col} {paren}\"{label}\" &e<")
-        } else {
-            // Next wins over fired; marker char conveys status (x = fired, blank = pending).
+        } else if show_marker {
+            // Marker char conveys run status: `x` (fired) or blank (pending).
             let marker = if fired.get(i).copied().unwrap_or(false) {
                 'x'
             } else {
                 ' '
             };
             format!("{code} {marker} #{i} {code}{kind_col} {paren}\"{label}\"")
+        } else {
+            format!("{code}#{i} {code}{kind_col} {paren}\"{label}\"")
         });
     }
     lines
+}
+
+/// Build the display string for a checkpoint label, used by both the in-world
+/// floating labels (`hud::labels`) and the built-in timer overlay
+/// (`timer::render`) in edit mode.
+///
+/// In **edit mode** every label carries an `index:` prefix and a `(<kind>)`
+/// suffix so every box is identifiable at a glance, even without a user-set
+/// label. The kind color is re-asserted before the suffix so a label carrying
+/// its own `&` codes can't bleed into the annotation. Callers pass
+/// `is_next = false` in edit mode (there is no live run to target while
+/// authoring).
+///
+/// Outside edit mode the raw `label` is shown without annotation (the kind
+/// information is already conveyed by the box color). An empty label yields an
+/// empty string.
+///
+/// During normal play the run's next-target gets a leading `&e> ` / trailing
+/// ` &e<` marker. The marker is suppressed when the body is empty so a lone
+/// `> ` is never drawn.
+pub(crate) fn display_label(
+    kind: CheckpointKind,
+    index: usize,
+    label: &str,
+    is_next: bool,
+    edit_mode: bool,
+) -> String {
+    let code = kind_color_code(kind);
+    let body = if edit_mode {
+        let name = kind_name(kind).to_ascii_lowercase();
+        if label.is_empty() {
+            format!("{code}{index}: ({name})")
+        } else {
+            format!("{code}{index}: {label} {code}({name})")
+        }
+    } else if label.is_empty() {
+        String::new()
+    } else {
+        format!("{code}{label}")
+    };
+    if is_next && !body.is_empty() {
+        format!("&e> {body} &e<")
+    } else {
+        body
+    }
 }
 
 #[derive(Debug, Default)]

@@ -28,9 +28,6 @@ mod context;
 mod render;
 mod texture;
 
-#[cfg(test)]
-mod tests;
-
 use std::cell::{Cell, RefCell};
 
 use classicube_helpers::events::gfx::{ContextLostEventHandler, ContextRecreatedEventHandler};
@@ -42,7 +39,7 @@ use super::{HUD_ID_COUNT, shared};
 use crate::plugin::{
     editor,
     module::Module,
-    splits::geometry::{Aabb, CheckpointKind, kind_color_code, kind_name},
+    splits::geometry::{Aabb, CheckpointKind, display_label},
 };
 
 /// One entry from `splits::visible_aabbs()`: the track-wide index, kind, AABB,
@@ -195,53 +192,6 @@ pub(super) fn reconcile(visible: &[VisibleEntry]) {
     });
     LAST_EDIT_MODE.set(edit_mode);
     debug!(count, "rebuilt floating checkpoint labels");
-}
-
-/// Build the floating display string for a checkpoint.
-///
-/// In **edit mode** every label carries a `(<kind>)` suffix (authoring aid so
-/// each box is identifiable at a glance, even without a user-set label). The
-/// kind color is re-asserted before the suffix so a label carrying its own `&`
-/// codes can't bleed into the annotation.
-///
-/// Outside edit mode the raw `label` is shown without annotation (the kind
-/// information is already conveyed by the box color). An empty label yields an
-/// empty string -- `create_label_texture` returns `None` for a zero-width
-/// string, so the label is simply skipped.
-///
-/// During normal play the run's next-target gets a leading `&e> ` marker
-/// (yellow positional cue). The marker is suppressed when the body is empty
-/// so we don't draw a lone `> `. In edit mode the HUD coordinator clears the
-/// is-next flag before calling [`reconcile`], so the marker never appears
-/// while authoring.
-fn display_label(
-    kind: CheckpointKind,
-    index: usize,
-    label: &str,
-    is_next: bool,
-    edit_mode: bool,
-) -> String {
-    let code = kind_color_code(kind);
-    let body = if edit_mode {
-        // Authoring view: index + kind suffix so every box is identifiable
-        // at a glance, even when unlabeled.
-        let name = kind_name(kind).to_ascii_lowercase();
-        if label.is_empty() {
-            format!("{code}{index}: ({name})")
-        } else {
-            format!("{code}{index}: {label} {code}({name})")
-        }
-    } else if label.is_empty() {
-        // Play view: raw label only; nothing to show for an unlabeled box.
-        String::new()
-    } else {
-        format!("{code}{label}")
-    };
-    if is_next && !body.is_empty() {
-        format!("&e> {body} &e<")
-    } else {
-        body
-    }
 }
 
 /// Drop the cached textures and the diff key, forcing the next [`reconcile`]

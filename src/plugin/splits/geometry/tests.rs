@@ -1948,7 +1948,7 @@ fn format_splits_lists_each_checkpoint_with_markers() {
     };
     // Checkpoint 0 fired; run cursor sits on index 1 (the next target).
     let fired = [true, false, false, false];
-    let lines = format_splits(&track, &fired, Some(1));
+    let lines = format_splits(&track, &fired, Some(1), true);
     assert_eq!(
         lines,
         vec![
@@ -1987,7 +1987,7 @@ fn format_splits_map_loaded_next_target_shows_map_name_in_bracket() {
     };
     // Start fired; map-transition is the next target.
     let fired = [true, false, false];
-    let lines = format_splits(&track, &fired, Some(1));
+    let lines = format_splits(&track, &fired, Some(1), true);
     assert_eq!(
         lines,
         vec![
@@ -2026,7 +2026,7 @@ fn format_splits_none_next_index_suppresses_marker() {
     };
     // Even though the cursor sits on index 1, `None` drops the highlight.
     let fired = [true, false, false];
-    let lines = format_splits(&track, &fired, None);
+    let lines = format_splits(&track, &fired, None, true);
     assert_eq!(
         lines,
         vec![
@@ -2075,7 +2075,7 @@ fn format_splits_pause_resume_kinds_use_correct_color_codes() {
     };
     // Checkpoints 0 and 1 fired; cursor on 2 (Resume -- next, yellow marker).
     let fired = [true, true, false, false];
-    let lines = format_splits(&track, &fired, Some(2));
+    let lines = format_splits(&track, &fired, Some(2), true);
     assert_eq!(
         lines,
         vec![
@@ -2468,4 +2468,88 @@ fn unload_leaves_no_track_and_run_not_in_progress() {
     // After unload both fired and last_inside are empty, so the formula is false.
     assert!(state.fired.is_empty());
     assert!(state.last_inside.is_empty());
+}
+
+// --- display_label ---
+
+#[test]
+fn display_label_edit_labeled_non_next() {
+    assert_eq!(
+        display_label(CheckpointKind::Split, 1, "jump-pad", false, true),
+        "&e1: jump-pad &e(split)"
+    );
+}
+
+#[test]
+fn display_label_edit_empty_non_next_shows_index_and_kind() {
+    assert_eq!(
+        display_label(CheckpointKind::Start, 0, "", false, true),
+        "&a0: (start)"
+    );
+}
+
+#[test]
+fn display_label_edit_labeled_next_prefixes_marker() {
+    assert_eq!(
+        display_label(CheckpointKind::End, 3, "final", true, true),
+        "&e> &c3: final &c(end) &e<"
+    );
+}
+
+#[test]
+fn display_label_edit_empty_next() {
+    assert_eq!(
+        display_label(CheckpointKind::Pause, 2, "", true, true),
+        "&e> &b2: (pause) &e<"
+    );
+}
+
+#[test]
+fn display_label_edit_resume_labeled() {
+    assert_eq!(
+        display_label(CheckpointKind::Resume, 4, "x", false, true),
+        "&64: x &6(resume)"
+    );
+}
+
+#[test]
+fn display_label_play_labeled_non_next() {
+    assert_eq!(
+        display_label(CheckpointKind::Split, 1, "jump-pad", false, false),
+        "&ejump-pad"
+    );
+}
+
+#[test]
+fn display_label_play_labeled_next_prefixes_marker() {
+    assert_eq!(
+        display_label(CheckpointKind::End, 3, "final", true, false),
+        "&e> &cfinal &e<"
+    );
+}
+
+#[test]
+fn display_label_play_empty_non_next_is_empty() {
+    assert_eq!(
+        display_label(CheckpointKind::Start, 0, "", false, false),
+        ""
+    );
+}
+
+#[test]
+fn display_label_play_empty_next_is_empty() {
+    assert_eq!(display_label(CheckpointKind::Pause, 2, "", true, false), "");
+}
+
+#[test]
+fn row_color_code_map_overrides_kind() {
+    // A MapLoaded checkpoint's kind field is Split, but it should render purple.
+    assert_eq!(row_color_code(CheckpointKind::Split, true), "&d");
+}
+
+#[test]
+fn row_color_code_non_map_uses_kind() {
+    assert_eq!(row_color_code(CheckpointKind::Split, false), "&e");
+    assert_eq!(row_color_code(CheckpointKind::Start, false), "&a");
+    assert_eq!(row_color_code(CheckpointKind::End, false), "&c");
 }

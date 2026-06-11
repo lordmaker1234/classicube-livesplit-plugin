@@ -133,6 +133,7 @@ fn state_with_rows(n: usize) -> TimerState {
                 CheckpointKind::Split
             },
             label: format!("cp{i}"),
+            is_map: false,
             time: None,
         })
         .collect();
