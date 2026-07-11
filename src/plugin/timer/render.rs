@@ -236,7 +236,12 @@ fn draw_overlay(vb: GfxResourceID, edit_mode: bool) {
                     .map(|(i, row)| {
                         let mut base_text = play_row_text(row.kind, &row.label, row.time, row.is_map);
                         if let Some(&speed) = speeds.get(i) { if speed > 0 {
-                            base_text = format!("{}  &b({:.1})", base_text, speed as f32 / 10.0);
+                            let speed_float = speed as f32 / 100.0;
+
+                            if speed_float < 10.0 { base_text = format!("{}  &b({:.2})", base_text, speed_float); }
+                            else if speed_float < 100.0 { base_text = format!("{}  &b({:.1})", base_text, speed_float); }
+                            else { base_text = format!("{}  &b({:.0})", base_text, speed_float); }
+                            
                         }
                     } base_text })
                 .collect()
